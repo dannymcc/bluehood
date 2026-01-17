@@ -10,7 +10,7 @@ from typing import Optional
 from aiohttp import web
 
 from . import db
-from .classifier import classify_device, get_type_icon, get_type_label, get_all_types
+from .classifier import classify_device, get_type_icon, get_type_label, get_all_types, is_randomized_mac
 from .patterns import generate_hourly_heatmap, generate_daily_heatmap
 
 logger = logging.getLogger(__name__)
@@ -711,7 +711,7 @@ HTML_TEMPLATE = """
                     <tr onclick="showDevice('${d.mac}')" style="cursor: pointer;">
                         <td><span class="device-type ${typeClass}">${d.type_icon} ${d.type_label}</span></td>
                         <td class="mac-address">${d.mac}</td>
-                        <td class="device-vendor">${d.vendor || 'Unknown'}</td>
+                        <td class="device-vendor">${d.vendor || (d.randomized_mac ? '<span style="color: var(--text-muted); font-style: italic;">Randomized</span>' : 'Unknown')}</td>
                         <td class="device-name">${d.friendly_name || '-'}</td>
                         <td><span class="sightings-badge">${d.total_sightings}</span></td>
                         <td class="last-seen ${isRecent ? 'recent' : ''}">${lastSeen}</td>
@@ -931,14 +931,19 @@ class WebServer:
             if d.first_seen and d.first_seen >= one_hour_ago:
                 new_past_hour += 1
 
+            # Check if MAC is randomized (privacy feature)
+            randomized = is_randomized_mac(d.mac)
+            vendor_display = d.vendor if d.vendor else ("Randomized MAC" if randomized else None)
+
             device_list.append({
                 "mac": d.mac,
-                "vendor": d.vendor,
+                "vendor": vendor_display,
                 "friendly_name": d.friendly_name,
                 "device_type": device_type,
                 "type_icon": get_type_icon(device_type),
                 "type_label": get_type_label(device_type),
                 "ignored": d.ignored,
+                "randomized_mac": randomized,
                 "first_seen": d.first_seen.isoformat() if d.first_seen else None,
                 "last_seen": d.last_seen.isoformat() if d.last_seen else None,
                 "total_sightings": d.total_sightings,

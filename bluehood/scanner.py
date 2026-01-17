@@ -100,8 +100,24 @@ class BluetoothScanner:
             logger.warning(f"Could not update vendor database: {e}")
             self._vendors_updated = True  # Don't retry
 
+    def _is_randomized_mac(self, mac: str) -> bool:
+        """Check if MAC address is locally administered (randomized).
+
+        The second-least-significant bit of the first byte indicates
+        locally administered addresses (randomized for privacy).
+        """
+        try:
+            first_byte = int(mac.split(":")[0], 16)
+            return bool(first_byte & 0x02)  # Check bit 1
+        except (ValueError, IndexError):
+            return False
+
     async def _get_vendor(self, mac: str) -> Optional[str]:
         """Look up vendor from MAC address OUI."""
+        # Skip randomized MACs - they won't have vendors
+        if self._is_randomized_mac(mac):
+            return None
+
         # Check cache first - only return if we have a successful lookup
         if mac in self._vendor_cache and self._vendor_cache[mac] is not None:
             return self._vendor_cache[mac]
@@ -130,17 +146,27 @@ class BluetoothScanner:
 
     async def _get_vendor_online(self, mac: str) -> Optional[str]:
         """Look up vendor using MACVendors.com API."""
+        # Rate limit: 1 request per second
+        if hasattr(self, '_last_api_call'):
+            elapsed = asyncio.get_event_loop().time() - self._last_api_call
+            if elapsed < 1.0:
+                await asyncio.sleep(1.0 - elapsed)
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{MACVENDORS_API_URL}{mac}",
                     timeout=aiohttp.ClientTimeout(total=5)
                 ) as response:
+                    self._last_api_call = asyncio.get_event_loop().time()
                     if response.status == 200:
                         vendor = await response.text()
                         return vendor.strip() if vendor else None
                     elif response.status == 404:
                         return None  # MAC not found in database
+                    elif response.status == 429:
+                        logger.debug("Vendor API rate limited")
+                        return None
                     else:
                         return None
         except asyncio.TimeoutError:
