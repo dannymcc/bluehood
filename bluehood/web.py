@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -11,7 +11,7 @@ from aiohttp import web
 
 from . import db
 from .classifier import classify_device, get_type_icon, get_type_label, get_all_types
-from .patterns import analyze_device_pattern, generate_hourly_heatmap, generate_daily_heatmap
+from .patterns import generate_hourly_heatmap, generate_daily_heatmap
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +171,7 @@ HTML_TEMPLATE = """
         .stat-value.cyan { color: var(--accent-cyan); }
         .stat-value.green { color: var(--accent-green); }
         .stat-value.yellow { color: var(--accent-yellow); }
+        .stat-value.purple { color: var(--accent-purple); }
 
         /* Section */
         .section {
@@ -550,8 +551,8 @@ HTML_TEMPLATE = """
                 <div class="stat-value green" id="stat-today">--</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Device Types</div>
-                <div class="stat-value cyan" id="stat-types">--</div>
+                <div class="stat-label">New (Past Hour)</div>
+                <div class="stat-value purple" id="stat-new-hour">--</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Total Sightings</div>
@@ -560,8 +561,11 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="search-box">
-            <input type="text" class="search-input" id="search" placeholder="Search by MAC, vendor, or name...">
-            <button class="btn btn-primary" onclick="refreshDevices()">Refresh</button>
+            <input type="text" class="search-input" id="search" placeholder="Search by MAC, vendor, or name..." style="flex: 2;">
+            <input type="datetime-local" class="search-input" id="search-start" title="Start datetime">
+            <input type="datetime-local" class="search-input" id="search-end" title="End datetime">
+            <button class="btn" onclick="clearDateFilters()">Clear Dates</button>
+            <button class="btn btn-primary" onclick="searchByDateRange()">Search</button>
         </div>
 
         <div class="filter-tabs">
@@ -619,6 +623,7 @@ HTML_TEMPLATE = """
     <script>
         let allDevices = [];
         let currentFilter = 'all';
+        let dateFilteredDevices = null;  // null means no date filter active
 
         // Fetch and display devices
         async function refreshDevices() {
@@ -627,7 +632,9 @@ HTML_TEMPLATE = """
                 const data = await response.json();
                 allDevices = data.devices || [];
                 updateStats(data);
-                renderDevices();
+                if (!dateFilteredDevices) {
+                    renderDevices();
+                }
                 document.getElementById('last-update').textContent = 'Last update: ' + new Date().toLocaleTimeString();
             } catch (error) {
                 console.error('Error fetching devices:', error);
@@ -637,15 +644,48 @@ HTML_TEMPLATE = """
         function updateStats(data) {
             document.getElementById('stat-total').textContent = data.total || 0;
             document.getElementById('stat-today').textContent = data.active_today || 0;
-            document.getElementById('stat-types').textContent = data.unique_types || 0;
+            document.getElementById('stat-new-hour').textContent = data.new_past_hour || 0;
             document.getElementById('stat-sightings').textContent = data.total_sightings || 0;
+        }
+
+        async function searchByDateRange() {
+            const startInput = document.getElementById('search-start').value;
+            const endInput = document.getElementById('search-end').value;
+
+            if (!startInput && !endInput) {
+                clearDateFilters();
+                return;
+            }
+
+            try {
+                let url = '/api/search?';
+                if (startInput) url += 'start=' + encodeURIComponent(startInput) + '&';
+                if (endInput) url += 'end=' + encodeURIComponent(endInput);
+
+                const response = await fetch(url);
+                const data = await response.json();
+                dateFilteredDevices = data.devices || [];
+                renderDevices();
+            } catch (error) {
+                console.error('Error searching:', error);
+            }
+        }
+
+        function clearDateFilters() {
+            document.getElementById('search-start').value = '';
+            document.getElementById('search-end').value = '';
+            dateFilteredDevices = null;
+            renderDevices();
         }
 
         function renderDevices() {
             const searchTerm = document.getElementById('search').value.toLowerCase();
             const tbody = document.getElementById('device-list');
 
-            let filtered = allDevices.filter(d => {
+            // Use date-filtered devices if active, otherwise use all devices
+            const sourceDevices = dateFilteredDevices !== null ? dateFilteredDevices : allDevices;
+
+            let filtered = sourceDevices.filter(d => {
                 // Apply type filter
                 if (currentFilter !== 'all' && d.device_type !== currentFilter) return false;
 
@@ -732,6 +772,18 @@ HTML_TEMPLATE = """
             const d = data.device;
             const content = document.getElementById('modal-content');
 
+            // Format RSSI with signal indicator
+            let rssiDisplay = 'No data';
+            if (data.avg_rssi !== null && data.avg_rssi !== undefined) {
+                const rssi = data.avg_rssi;
+                let strength = 'Weak';
+                let color = 'var(--accent-red)';
+                if (rssi > -50) { strength = 'Excellent'; color = 'var(--accent-green)'; }
+                else if (rssi > -60) { strength = 'Good'; color = 'var(--accent-cyan)'; }
+                else if (rssi > -70) { strength = 'Fair'; color = 'var(--accent-yellow)'; }
+                rssiDisplay = `<span style="color: ${color}">${rssi} dBm (${strength})</span>`;
+            }
+
             content.innerHTML = `
                 <div class="detail-row">
                     <span class="detail-label">MAC Address</span>
@@ -760,6 +812,10 @@ HTML_TEMPLATE = """
                 <div class="detail-row">
                     <span class="detail-label">Total Sightings</span>
                     <span class="detail-value">${d.total_sightings}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Avg Signal Strength</span>
+                    <span class="detail-value">${rssiDisplay}</span>
                 </div>
                 <div class="detail-row">
                     <span class="detail-label">Pattern</span>
@@ -842,6 +898,7 @@ class WebServer:
         self.app.router.add_get("/", self.index)
         self.app.router.add_get("/api/devices", self.api_devices)
         self.app.router.add_get("/api/device/{mac}", self.api_device)
+        self.app.router.add_get("/api/search", self.api_search)
         self.app.router.add_get("/api/stats", self.api_stats)
 
     async def index(self, request: web.Request) -> web.Response:
@@ -852,8 +909,12 @@ class WebServer:
         """Get all devices with stats."""
         devices = await db.get_all_devices(include_ignored=True)
 
-        today = datetime.now().date()
+        now = datetime.now()
+        today = now.date()
+        one_hour_ago = now - timedelta(hours=1)
+
         active_today = 0
+        new_past_hour = 0
         total_sightings = 0
         type_set = set()
 
@@ -865,6 +926,10 @@ class WebServer:
 
             if d.last_seen and d.last_seen.date() == today:
                 active_today += 1
+
+            # Count devices first seen in the past hour
+            if d.first_seen and d.first_seen >= one_hour_ago:
+                new_past_hour += 1
 
             device_list.append({
                 "mac": d.mac,
@@ -883,7 +948,7 @@ class WebServer:
             "devices": device_list,
             "total": len(devices),
             "active_today": active_today,
-            "unique_types": len(type_set),
+            "new_past_hour": new_past_hour,
             "total_sightings": total_sightings,
         })
 
@@ -897,8 +962,15 @@ class WebServer:
 
         hourly = await db.get_hourly_distribution(mac, 30)
         daily = await db.get_daily_distribution(mac, 30)
+        sightings = await db.get_sightings(mac, 30)
         device_type = device.device_type or classify_device(device.vendor, device.friendly_name)
-        pattern = analyze_device_pattern(hourly, daily)
+
+        # Calculate pattern summary
+        pattern = self._analyze_pattern(hourly, daily, len(sightings))
+
+        # Calculate average RSSI from recent sightings
+        rssi_values = [s.rssi for s in sightings if s.rssi is not None]
+        avg_rssi = round(sum(rssi_values) / len(rssi_values)) if rssi_values else None
 
         return web.json_response({
             "device": {
@@ -913,8 +985,103 @@ class WebServer:
             },
             "type_label": get_type_label(device_type),
             "pattern": pattern,
+            "avg_rssi": avg_rssi,
             "hourly_heatmap": generate_hourly_heatmap(hourly),
             "daily_heatmap": generate_daily_heatmap(daily),
+        })
+
+    def _analyze_pattern(self, hourly: dict, daily: dict, sighting_count: int) -> str:
+        """Simple pattern analysis from hourly/daily data."""
+        if sighting_count < 5:
+            return "Insufficient data"
+
+        parts = []
+
+        # Frequency
+        avg_per_day = sighting_count / 30
+        if avg_per_day >= 5:
+            parts.append("Constant")
+        elif avg_per_day >= 2:
+            parts.append("Very frequent")
+        elif avg_per_day >= 1:
+            parts.append("Daily")
+        elif avg_per_day >= 0.5:
+            parts.append("Regular")
+        elif avg_per_day >= 0.15:
+            parts.append("Occasional")
+        else:
+            parts.append("Rare")
+
+        # Time pattern
+        if hourly:
+            total = sum(hourly.values())
+            morning = sum(hourly.get(h, 0) for h in range(6, 12))
+            afternoon = sum(hourly.get(h, 0) for h in range(12, 18))
+            evening = sum(hourly.get(h, 0) for h in range(18, 24))
+            night = sum(hourly.get(h, 0) for h in range(0, 6))
+
+            if total > 0:
+                dominant = max([(morning, "mornings"), (afternoon, "afternoons"),
+                               (evening, "evenings"), (night, "nights")], key=lambda x: x[0])
+                if dominant[0] / total > 0.5:
+                    parts.append(dominant[1])
+
+        # Day pattern
+        if daily:
+            total = sum(daily.values())
+            weekday = sum(daily.get(d, 0) for d in range(5))
+            weekend = sum(daily.get(d, 0) for d in range(5, 7))
+
+            if total > 0:
+                if weekday / total > 0.85:
+                    parts.append("weekdays only")
+                elif weekend / total > 0.7:
+                    parts.append("weekends only")
+
+        return ", ".join(parts) if parts else "No clear pattern"
+
+    async def api_search(self, request: web.Request) -> web.Response:
+        """Search for devices seen within a datetime range."""
+        start_str = request.query.get("start")
+        end_str = request.query.get("end")
+
+        start_dt = None
+        end_dt = None
+
+        try:
+            if start_str:
+                start_dt = datetime.fromisoformat(start_str.replace("T", " "))
+            if end_str:
+                end_dt = datetime.fromisoformat(end_str.replace("T", " "))
+        except ValueError:
+            return web.json_response({"error": "Invalid datetime format"}, status=400)
+
+        # Search for devices with sightings in the range
+        results = await db.search_devices(None, start_dt, end_dt)
+
+        device_list = []
+        for r in results:
+            device_type = r.get("device_type") or classify_device(r.get("vendor"), r.get("friendly_name"))
+            device_list.append({
+                "mac": r["mac"],
+                "vendor": r.get("vendor"),
+                "friendly_name": r.get("friendly_name"),
+                "device_type": device_type,
+                "type_icon": get_type_icon(device_type),
+                "type_label": get_type_label(device_type),
+                "ignored": r.get("ignored", False),
+                "first_seen": r.get("range_first"),
+                "last_seen": r.get("range_last"),
+                "total_sightings": r.get("range_sightings", 0),
+            })
+
+        return web.json_response({
+            "devices": device_list,
+            "total": len(device_list),
+            "query": {
+                "start": start_str,
+                "end": end_str,
+            }
         })
 
     async def api_stats(self, request: web.Request) -> web.Response:
