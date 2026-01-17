@@ -307,9 +307,9 @@ def main() -> None:
         help="List available Bluetooth adapters and exit"
     )
     parser.add_argument(
-        "-w", "--web",
+        "--no-web",
         action="store_true",
-        help="Enable web dashboard"
+        help="Disable web dashboard"
     )
     parser.add_argument(
         "-p", "--port",
@@ -329,7 +329,7 @@ def main() -> None:
             print("No Bluetooth adapters found")
         return
 
-    web_port = args.port if args.web else None
+    web_port = None if args.no_web else args.port
     daemon = BluehoodDaemon(adapter=args.adapter, web_port=web_port)
     try:
         asyncio.run(daemon.start())
