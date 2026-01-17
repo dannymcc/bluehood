@@ -126,21 +126,30 @@ class BluehoodDaemon:
         if cmd == "list":
             include_ignored = request.get("include_ignored", True)
             devices = await db.get_all_devices(include_ignored)
-            return {
-                "status": "ok",
-                "devices": [
-                    {
-                        "mac": d.mac,
-                        "vendor": d.vendor,
-                        "friendly_name": d.friendly_name,
-                        "ignored": d.ignored,
-                        "first_seen": d.first_seen.isoformat() if d.first_seen else None,
-                        "last_seen": d.last_seen.isoformat() if d.last_seen else None,
-                        "total_sightings": d.total_sightings,
-                    }
-                    for d in devices
-                ]
-            }
+
+            # Auto-classify devices that don't have a type
+            from .classifier import classify_device
+            device_list = []
+            for d in devices:
+                device_type = d.device_type
+                if not device_type:
+                    device_type = classify_device(d.vendor, d.friendly_name)
+                    # Store the auto-classified type
+                    if device_type != "unknown":
+                        await db.set_device_type(d.mac, device_type)
+
+                device_list.append({
+                    "mac": d.mac,
+                    "vendor": d.vendor,
+                    "friendly_name": d.friendly_name,
+                    "device_type": device_type,
+                    "ignored": d.ignored,
+                    "first_seen": d.first_seen.isoformat() if d.first_seen else None,
+                    "last_seen": d.last_seen.isoformat() if d.last_seen else None,
+                    "total_sightings": d.total_sightings,
+                })
+
+            return {"status": "ok", "devices": device_list}
 
         elif cmd == "set_name":
             mac = request.get("mac")
@@ -157,6 +166,22 @@ class BluehoodDaemon:
                 await db.set_ignored(mac, ignored)
                 return {"status": "ok"}
             return {"status": "error", "message": "Missing mac"}
+
+        elif cmd == "set_device_type":
+            mac = request.get("mac")
+            device_type = request.get("device_type")
+            if mac and device_type:
+                await db.set_device_type(mac, device_type)
+                return {"status": "ok"}
+            return {"status": "error", "message": "Missing mac or device_type"}
+
+        elif cmd == "get_device_types":
+            from .classifier import get_all_types
+            types = get_all_types()
+            return {
+                "status": "ok",
+                "types": [{"id": t[0], "icon": t[1], "label": t[2]} for t in types]
+            }
 
         elif cmd == "get_sightings":
             mac = request.get("mac")

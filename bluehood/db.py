@@ -14,6 +14,7 @@ class Device:
     mac: str
     vendor: Optional[str] = None
     friendly_name: Optional[str] = None
+    device_type: Optional[str] = None
     ignored: bool = False
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS devices (
     mac TEXT PRIMARY KEY,
     vendor TEXT,
     friendly_name TEXT,
+    device_type TEXT,
     ignored INTEGER DEFAULT 0,
     first_seen TIMESTAMP,
     last_seen TIMESTAMP,
@@ -57,6 +59,12 @@ async def init_db() -> None:
     """Initialize the database schema."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
+        # Migration: add device_type column if missing
+        try:
+            await db.execute("ALTER TABLE devices ADD COLUMN device_type TEXT")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
         await db.commit()
 
 
@@ -73,6 +81,7 @@ async def get_device(mac: str) -> Optional[Device]:
                     mac=row["mac"],
                     vendor=row["vendor"],
                     friendly_name=row["friendly_name"],
+                    device_type=row["device_type"] if "device_type" in row.keys() else None,
                     ignored=bool(row["ignored"]),
                     first_seen=datetime.fromisoformat(row["first_seen"]) if row["first_seen"] else None,
                     last_seen=datetime.fromisoformat(row["last_seen"]) if row["last_seen"] else None,
@@ -97,6 +106,7 @@ async def get_all_devices(include_ignored: bool = True) -> list[Device]:
                     mac=row["mac"],
                     vendor=row["vendor"],
                     friendly_name=row["friendly_name"],
+                    device_type=row["device_type"] if "device_type" in row.keys() else None,
                     ignored=bool(row["ignored"]),
                     first_seen=datetime.fromisoformat(row["first_seen"]) if row["first_seen"] else None,
                     last_seen=datetime.fromisoformat(row["last_seen"]) if row["last_seen"] else None,
@@ -173,6 +183,16 @@ async def set_ignored(mac: str, ignored: bool) -> None:
         await db.execute(
             "UPDATE devices SET ignored = ? WHERE mac = ?",
             (1 if ignored else 0, mac)
+        )
+        await db.commit()
+
+
+async def set_device_type(mac: str, device_type: str) -> None:
+    """Set the device type for a device."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE devices SET device_type = ? WHERE mac = ?",
+            (device_type, mac)
         )
         await db.commit()
 

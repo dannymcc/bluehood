@@ -148,6 +148,20 @@ class DaemonClient:
         response = await self.send_command(cmd)
         return response.get("results", [])
 
+    async def set_device_type(self, mac: str, device_type: str) -> bool:
+        """Set device type for a device."""
+        response = await self.send_command({
+            "cmd": "set_device_type",
+            "mac": mac,
+            "device_type": device_type,
+        })
+        return response.get("status") == "ok"
+
+    async def get_device_types(self) -> list[dict]:
+        """Get available device types."""
+        response = await self.send_command({"cmd": "get_device_types"})
+        return response.get("types", [])
+
 
 class NameInputScreen(ModalScreen[str]):
     """Modal screen for entering a device name."""
@@ -177,6 +191,57 @@ class NameInputScreen(ModalScreen[str]):
     @on(Input.Submitted)
     def on_submit(self, event: Input.Submitted) -> None:
         self.dismiss(event.value)
+
+    def action_cancel(self) -> None:
+        self.dismiss("")
+
+
+class DeviceTypeScreen(ModalScreen[str]):
+    """Modal screen for selecting device type."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, mac: str, device_types: list[dict], current_type: str = ""):
+        super().__init__()
+        self.mac = mac
+        self.device_types = device_types
+        self.current_type = current_type
+        self.selected_index = 0
+        # Find current type index
+        for i, t in enumerate(device_types):
+            if t["id"] == current_type:
+                self.selected_index = i
+                break
+
+    def compose(self) -> ComposeResult:
+        with Container(id="type-dialog"):
+            yield Label(f"Set device type for {self.mac[:17]}", classes="title")
+            yield Static("", id="type-list")
+            yield Label("Use arrows to select, Enter to confirm, Escape to cancel", classes="hint")
+
+    def on_mount(self) -> None:
+        self._update_list()
+
+    def _update_list(self) -> None:
+        lines = []
+        for i, t in enumerate(self.device_types):
+            marker = ">" if i == self.selected_index else " "
+            current = "*" if t["id"] == self.current_type else " "
+            lines.append(f" {marker} {t['icon']} {t['label']:<12} {current}")
+        self.query_one("#type-list", Static).update("\n".join(lines))
+
+    def key_up(self) -> None:
+        self.selected_index = (self.selected_index - 1) % len(self.device_types)
+        self._update_list()
+
+    def key_down(self) -> None:
+        self.selected_index = (self.selected_index + 1) % len(self.device_types)
+        self._update_list()
+
+    def key_enter(self) -> None:
+        self.dismiss(self.device_types[self.selected_index]["id"])
 
     def action_cancel(self) -> None:
         self.dismiss("")
@@ -537,6 +602,30 @@ class BluehoodApp(App):
     #results-dialog Static {
         color: #cdd6f4;
     }
+
+    #type-dialog {
+        align: center middle;
+        width: 35;
+        height: 22;
+        border: round #89b4fa;
+        background: #313244;
+        padding: 1 2;
+    }
+
+    #type-dialog .title {
+        text-style: bold;
+        color: #89b4fa;
+        margin-bottom: 1;
+    }
+
+    #type-dialog .hint {
+        margin-top: 1;
+        color: #6c7086;
+    }
+
+    #type-dialog Static {
+        color: #cdd6f4;
+    }
     """
 
     BINDINGS = [
@@ -544,6 +633,7 @@ class BluehoodApp(App):
         Binding("r", "refresh", "Refresh"),
         Binding("s", "search", "Search"),
         Binding("enter", "show_detail", "View", show=False),
+        Binding("t", "set_type", "Type"),
         Binding("i", "toggle_ignore", "Ignore"),
         Binding("n", "set_name", "Name"),
         Binding("d", "show_detail", "Details"),
@@ -568,7 +658,7 @@ class BluehoodApp(App):
         table = self.query_one("#device-table", DataTable)
         table.cursor_type = "row"
         table.zebra_stripes = True
-        table.add_columns("MAC Address", "Vendor", "Name", "Seen", "Last Active", "Pattern")
+        table.add_columns("Type", "MAC Address", "Vendor", "Name", "Seen", "Last Active")
 
         # Connect to daemon
         if await self.client.connect():
@@ -609,12 +699,17 @@ class BluehoodApp(App):
             except Exception:
                 pass
 
+        # Import classifier for type icons
+        from .classifier import get_type_icon
+
         # Update or add rows
         for device in new_devices:
             mac = device.get("mac", "")
             vendor = device.get("vendor") or "Unknown"
             name = device.get("friendly_name") or ""
             sightings = str(device.get("total_sightings", 0))
+            device_type = device.get("device_type") or "unknown"
+            type_icon = get_type_icon(device_type)
 
             last_seen = device.get("last_seen")
             if last_seen:
@@ -623,32 +718,25 @@ class BluehoodApp(App):
             else:
                 last_seen = "Never"
 
-            # Get pattern (simplified for table view) - skip on updates to avoid slowdown
-            if mac not in existing_macs:
-                hourly = await self.client.get_hourly(mac, 30)
-                from .patterns import _analyze_time_pattern
-                pattern = _analyze_time_pattern(hourly)
-            else:
-                pattern = ""  # Keep existing pattern on updates
-
             # Truncate long values for display
             vendor = vendor[:18] if len(vendor) > 18 else vendor
-            name = name[:25] if len(name) > 25 else name
+            name = name[:20] if len(name) > 20 else name
 
             if mac in existing_macs:
                 # Update existing row
                 try:
                     row_idx = table.get_row_index(mac)
-                    table.update_cell_at((row_idx, 0), mac)
-                    table.update_cell_at((row_idx, 1), vendor)
-                    table.update_cell_at((row_idx, 2), name)
-                    table.update_cell_at((row_idx, 3), sightings)
-                    table.update_cell_at((row_idx, 4), last_seen)
+                    table.update_cell_at((row_idx, 0), type_icon)
+                    table.update_cell_at((row_idx, 1), mac)
+                    table.update_cell_at((row_idx, 2), vendor)
+                    table.update_cell_at((row_idx, 3), name)
+                    table.update_cell_at((row_idx, 4), sightings)
+                    table.update_cell_at((row_idx, 5), last_seen)
                 except Exception:
                     pass
             else:
                 # Add new row
-                table.add_row(mac, vendor, name, sightings, last_seen, pattern, key=mac)
+                table.add_row(type_icon, mac, vendor, name, sightings, last_seen, key=mac)
 
         self.devices = new_devices
         self.update_status("Refreshed")
@@ -704,6 +792,27 @@ class BluehoodApp(App):
                     self.run_worker(do_set())
 
             self.push_screen(NameInputScreen(mac, current_name), on_name_set)
+
+    async def action_set_type(self) -> None:
+        """Set device type for selected device."""
+        device = self._get_selected_device()
+        if device:
+            mac = device.get("mac")
+            current_type = device.get("device_type") or "unknown"
+
+            # Get available types
+            device_types = await self.client.get_device_types()
+
+            def on_type_set(new_type: str) -> None:
+                if new_type:
+                    async def do_set():
+                        if await self.client.set_device_type(mac, new_type):
+                            await self.refresh_devices()
+                            from .classifier import get_type_label
+                            self.update_status(f"Set {mac[:8]}... to {get_type_label(new_type)}")
+                    self.run_worker(do_set())
+
+            self.push_screen(DeviceTypeScreen(mac, device_types, current_type), on_type_set)
 
     async def action_show_detail(self) -> None:
         """Show detail screen for selected device."""
