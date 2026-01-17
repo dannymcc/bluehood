@@ -49,29 +49,23 @@ def list_adapters() -> list[BluetoothAdapter]:
             text=True,
             timeout=5
         )
+        idx = 0
         for line in result.stdout.strip().split("\n"):
             if line.startswith("Controller"):
                 parts = line.split()
                 if len(parts) >= 3:
                     address = parts[1]
                     alias = " ".join(parts[2:])
-                    # Try to get hci name
-                    hci_result = subprocess.run(
-                        ["hcitool", "dev"],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    hci_name = "hci0"  # default
-                    for hci_line in hci_result.stdout.strip().split("\n"):
-                        if address in hci_line:
-                            hci_name = hci_line.split()[0]
-                            break
+                    # Assume hci naming convention
+                    hci_name = f"hci{idx}"
+                    idx += 1
                     adapters.append(BluetoothAdapter(
                         name=hci_name,
                         address=address,
                         alias=alias
                     ))
+    except FileNotFoundError:
+        logger.warning("bluetoothctl not found - install bluez-utils")
     except Exception as e:
         logger.warning(f"Could not list adapters: {e}")
     return adapters
