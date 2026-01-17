@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bluehood"
+version = "0.1.0"
+description = "Bluetooth neighborhood monitor - track devices in your area"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.47.0",
+    "bleak>=0.21.0",
+    "aiosqlite>=0.19.0",
+    "mac-vendor-lookup>=0.1.12",
+]
+
+[project.scripts]
+bluehood = "bluehood.tui:main"
+bluehood-daemon = "bluehood.daemon:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
