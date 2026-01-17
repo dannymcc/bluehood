@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import subprocess
+import sys
 from datetime import datetime
 from typing import Optional
 
@@ -667,7 +669,27 @@ class BluehoodApp(App):
             # Start background refresh
             self.set_interval(10, self.refresh_devices)
         else:
-            self.update_status("Failed to connect - is bluehood-daemon running?")
+            # Try to start the daemon
+            self.update_status("Starting daemon...")
+            try:
+                # Start daemon in background
+                subprocess.Popen(
+                    [sys.executable, "-m", "bluehood.daemon"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                # Wait for daemon to initialize
+                for i in range(10):
+                    await asyncio.sleep(0.5)
+                    if await self.client.connect():
+                        self.update_status("Connected to daemon (auto-started)")
+                        await self.refresh_devices()
+                        self.set_interval(10, self.refresh_devices)
+                        return
+                self.update_status("Failed to start daemon - check permissions")
+            except Exception as e:
+                self.update_status(f"Error starting daemon: {e}")
 
     async def on_unmount(self) -> None:
         """Cleanup on exit."""

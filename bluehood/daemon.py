@@ -13,6 +13,7 @@ from typing import Optional
 from . import db
 from .config import SCAN_INTERVAL, SOCKET_PATH
 from .scanner import BluetoothScanner, ScannedDevice, list_adapters
+from .web import WebServer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,11 +26,13 @@ logger = logging.getLogger(__name__)
 class BluehoodDaemon:
     """Main daemon process for Bluetooth scanning."""
 
-    def __init__(self, adapter: Optional[str] = None):
+    def __init__(self, adapter: Optional[str] = None, web_port: Optional[int] = None):
         self.scanner = BluetoothScanner(adapter=adapter)
         self.running = False
         self.clients: list[asyncio.StreamWriter] = []
         self._server: asyncio.Server | None = None
+        self._web_port = web_port
+        self._web_server: WebServer | None = None
 
     async def start(self) -> None:
         """Start the daemon."""
@@ -46,6 +49,12 @@ class BluehoodDaemon:
 
         # Start socket server for TUI communication
         await self._start_socket_server()
+
+        # Start web server if port specified
+        if self._web_port:
+            self._web_server = WebServer(port=self._web_port)
+            await self._web_server.start()
+            logger.info(f"Web dashboard available at http://0.0.0.0:{self._web_port}")
 
         # Start scanning
         self.running = True
@@ -65,6 +74,10 @@ class BluehoodDaemon:
         if self._server:
             self._server.close()
             await self._server.wait_closed()
+
+        # Stop web server
+        if self._web_server:
+            await self._web_server.stop()
 
         # Remove socket file
         if SOCKET_PATH.exists():
@@ -293,6 +306,17 @@ def main() -> None:
         action="store_true",
         help="List available Bluetooth adapters and exit"
     )
+    parser.add_argument(
+        "-w", "--web",
+        action="store_true",
+        help="Enable web dashboard"
+    )
+    parser.add_argument(
+        "-p", "--port",
+        type=int,
+        default=8080,
+        help="Web dashboard port (default: 8080)"
+    )
     args = parser.parse_args()
 
     if args.list_adapters:
@@ -305,7 +329,8 @@ def main() -> None:
             print("No Bluetooth adapters found")
         return
 
-    daemon = BluehoodDaemon(adapter=args.adapter)
+    web_port = args.port if args.web else None
+    daemon = BluehoodDaemon(adapter=args.adapter, web_port=web_port)
     try:
         asyncio.run(daemon.start())
     except KeyboardInterrupt:
