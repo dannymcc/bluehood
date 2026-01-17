@@ -11,7 +11,7 @@ from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
 try:
-    from mac_vendor_lookup import AsyncMacLookup
+    from mac_vendor_lookup import AsyncMacLookup, MacLookup
     HAS_MAC_LOOKUP = True
 except ImportError:
     HAS_MAC_LOOKUP = False
@@ -78,6 +78,23 @@ class BluetoothScanner:
         self.adapter = adapter or BLUETOOTH_ADAPTER
         self._mac_lookup: Optional[AsyncMacLookup] = None
         self._vendor_cache: dict[str, Optional[str]] = {}
+        self._vendors_updated = False
+
+    async def _ensure_vendor_db(self) -> None:
+        """Ensure vendor database is up to date."""
+        if self._vendors_updated or not HAS_MAC_LOOKUP:
+            return
+
+        try:
+            # Update vendors synchronously on first use
+            logger.info("Updating MAC vendor database...")
+            mac_lookup = MacLookup()
+            mac_lookup.update_vendors()
+            self._vendors_updated = True
+            logger.info("MAC vendor database updated")
+        except Exception as e:
+            logger.warning(f"Could not update vendor database: {e}")
+            self._vendors_updated = True  # Don't retry
 
     async def _get_vendor(self, mac: str) -> Optional[str]:
         """Look up vendor from MAC address OUI."""
@@ -90,6 +107,7 @@ class BluetoothScanner:
 
         try:
             if self._mac_lookup is None:
+                await self._ensure_vendor_db()
                 self._mac_lookup = AsyncMacLookup()
 
             vendor = await self._mac_lookup.lookup(mac)

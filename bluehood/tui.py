@@ -63,8 +63,15 @@ class DaemonClient:
             self.writer.write(json.dumps(cmd).encode() + b"\n")
             await self.writer.drain()
 
-            data = await self.reader.readline()
-            return json.loads(data.decode())
+            # Read response, skipping any notifications (event messages)
+            while True:
+                data = await self.reader.readline()
+                if not data:
+                    return {"status": "error", "message": "Connection closed"}
+                response = json.loads(data.decode())
+                # Skip notification events, wait for actual command response
+                if "event" not in response:
+                    return response
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
@@ -313,17 +320,26 @@ class BluehoodApp(App):
         if not self.client.connected:
             return
 
-        self.devices = await self.client.list_devices(self.show_ignored)
-
+        new_devices = await self.client.list_devices(self.show_ignored)
         table = self.query_one("#device-table", DataTable)
-        table.clear()
 
-        for device in self.devices:
+        # Track existing MACs
+        existing_macs = {d.get("mac") for d in self.devices}
+        new_macs = {d.get("mac") for d in new_devices}
+
+        # Remove rows that no longer exist
+        for mac in existing_macs - new_macs:
+            try:
+                table.remove_row(mac)
+            except Exception:
+                pass
+
+        # Update or add rows
+        for device in new_devices:
             mac = device.get("mac", "")
             vendor = device.get("vendor") or "Unknown"
             name = device.get("friendly_name") or ""
             sightings = str(device.get("total_sightings", 0))
-            ignored = device.get("ignored", False)
 
             last_seen = device.get("last_seen")
             if last_seen:
@@ -332,18 +348,34 @@ class BluehoodApp(App):
             else:
                 last_seen = "Never"
 
-            # Get pattern (simplified for table view)
-            hourly = await self.client.get_hourly(mac, 30)
-            from .patterns import _analyze_time_pattern
-            pattern = _analyze_time_pattern(hourly)
+            # Get pattern (simplified for table view) - skip on updates to avoid slowdown
+            if mac not in existing_macs:
+                hourly = await self.client.get_hourly(mac, 30)
+                from .patterns import _analyze_time_pattern
+                pattern = _analyze_time_pattern(hourly)
+            else:
+                pattern = ""  # Keep existing pattern on updates
 
             # Truncate long values
             vendor = vendor[:20] if len(vendor) > 20 else vendor
             name = name[:15] if len(name) > 15 else name
 
-            row_style = "ignored" if ignored else ""
-            table.add_row(mac, vendor, name, sightings, last_seen, pattern, key=mac)
+            if mac in existing_macs:
+                # Update existing row
+                try:
+                    row_idx = table.get_row_index(mac)
+                    table.update_cell_at((row_idx, 0), mac)
+                    table.update_cell_at((row_idx, 1), vendor)
+                    table.update_cell_at((row_idx, 2), name)
+                    table.update_cell_at((row_idx, 3), sightings)
+                    table.update_cell_at((row_idx, 4), last_seen)
+                except Exception:
+                    pass
+            else:
+                # Add new row
+                table.add_row(mac, vendor, name, sightings, last_seen, pattern, key=mac)
 
+        self.devices = new_devices
         self.update_status("Refreshed")
 
     @on(DataTable.RowSelected)
