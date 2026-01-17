@@ -2,6 +2,19 @@
 
 from typing import Optional
 
+
+def is_randomized_mac(mac: str) -> bool:
+    """Check if MAC address is locally administered (randomized for privacy).
+
+    Modern devices randomize their MAC addresses by setting the
+    locally administered bit (bit 1 of first byte).
+    """
+    try:
+        first_byte = int(mac.split(":")[0], 16)
+        return bool(first_byte & 0x02)
+    except (ValueError, IndexError):
+        return False
+
 # Device type constants
 TYPE_PHONE = "phone"
 TYPE_TABLET = "tablet"
