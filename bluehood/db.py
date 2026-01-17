@@ -234,3 +234,84 @@ async def cleanup_old_sightings(days: int = 90) -> int:
         )
         await db.commit()
         return cursor.rowcount
+
+
+async def search_devices(
+    mac_filter: Optional[str] = None,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+) -> list[dict]:
+    """
+    Search for devices by MAC and/or time range.
+    Returns devices with sighting count in the specified range.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        # Build query based on filters
+        if start_time or end_time:
+            # Search by time range - find devices seen in that range
+            conditions = []
+            params = []
+
+            if mac_filter:
+                conditions.append("d.mac LIKE ?")
+                params.append(f"%{mac_filter}%")
+
+            if start_time:
+                conditions.append("s.timestamp >= ?")
+                params.append(start_time.isoformat())
+
+            if end_time:
+                conditions.append("s.timestamp <= ?")
+                params.append(end_time.isoformat())
+
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+            query = f"""
+                SELECT d.*, COUNT(s.id) as range_sightings,
+                       MIN(s.timestamp) as range_first,
+                       MAX(s.timestamp) as range_last
+                FROM devices d
+                JOIN sightings s ON d.mac = s.mac
+                WHERE {where_clause}
+                GROUP BY d.mac
+                ORDER BY range_sightings DESC
+            """
+        else:
+            # Just MAC filter, no time range
+            if mac_filter:
+                query = """
+                    SELECT *, total_sightings as range_sightings,
+                           first_seen as range_first, last_seen as range_last
+                    FROM devices
+                    WHERE mac LIKE ? OR friendly_name LIKE ? OR vendor LIKE ?
+                    ORDER BY last_seen DESC
+                """
+                params = [f"%{mac_filter}%", f"%{mac_filter}%", f"%{mac_filter}%"]
+            else:
+                query = """
+                    SELECT *, total_sightings as range_sightings,
+                           first_seen as range_first, last_seen as range_last
+                    FROM devices
+                    ORDER BY last_seen DESC
+                """
+                params = []
+
+        async with db.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "mac": row["mac"],
+                    "vendor": row["vendor"],
+                    "friendly_name": row["friendly_name"],
+                    "ignored": bool(row["ignored"]),
+                    "first_seen": row["first_seen"],
+                    "last_seen": row["last_seen"],
+                    "total_sightings": row["total_sightings"],
+                    "range_sightings": row["range_sightings"],
+                    "range_first": row["range_first"],
+                    "range_last": row["range_last"],
+                }
+                for row in rows
+            ]

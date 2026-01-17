@@ -131,6 +131,23 @@ class DaemonClient:
         })
         return response.get("sightings", [])
 
+    async def search(
+        self,
+        mac: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+    ) -> list[dict]:
+        """Search devices by MAC and/or time range."""
+        cmd = {"cmd": "search"}
+        if mac:
+            cmd["mac"] = mac
+        if start_time:
+            cmd["start_time"] = start_time
+        if end_time:
+            cmd["end_time"] = end_time
+        response = await self.send_command(cmd)
+        return response.get("results", [])
+
 
 class NameInputScreen(ModalScreen[str]):
     """Modal screen for entering a device name."""
@@ -228,6 +245,78 @@ class DetailScreen(ModalScreen):
         self.dismiss()
 
 
+class SearchScreen(ModalScreen):
+    """Modal screen for searching devices."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="search-dialog"):
+            yield Label("Search Devices", classes="title")
+            yield Label("MAC/Name/Vendor:")
+            yield Input(placeholder="Search text (leave empty for all)", id="search-mac")
+            yield Label("Start Time (YYYY-MM-DD HH:MM):")
+            yield Input(placeholder="e.g. 2026-01-17 09:00", id="search-start")
+            yield Label("End Time (YYYY-MM-DD HH:MM):")
+            yield Input(placeholder="e.g. 2026-01-17 18:00", id="search-end")
+            yield Label("Press Enter to search, Escape to cancel", classes="hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#search-mac", Input).focus()
+
+    @on(Input.Submitted)
+    def on_submit(self, event: Input.Submitted) -> None:
+        mac = self.query_one("#search-mac", Input).value.strip()
+        start = self.query_one("#search-start", Input).value.strip()
+        end = self.query_one("#search-end", Input).value.strip()
+        self.dismiss({"mac": mac or None, "start": start or None, "end": end or None})
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class SearchResultsScreen(ModalScreen):
+    """Modal screen showing search results."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("q", "close", "Close"),
+    ]
+
+    def __init__(self, results: list[dict], query_desc: str):
+        super().__init__()
+        self.results = results
+        self.query_desc = query_desc
+
+    def compose(self) -> ComposeResult:
+        with Container(id="results-dialog"):
+            yield Label(f"Search Results: {self.query_desc}", classes="title")
+            yield Label(f"Found {len(self.results)} devices", classes="subtitle")
+
+            if self.results:
+                # Create a simple table view
+                yield Static("MAC               Vendor          Name         Sightings")
+                yield Static("-" * 65)
+                for r in self.results[:20]:  # Show top 20
+                    mac = r.get("mac", "")[:17]
+                    vendor = (r.get("vendor") or "Unknown")[:15]
+                    name = (r.get("friendly_name") or "")[:12]
+                    sightings = r.get("range_sightings", 0)
+                    yield Static(f"{mac:<17} {vendor:<15} {name:<12} {sightings:>5}")
+
+                if len(self.results) > 20:
+                    yield Static(f"... and {len(self.results) - 20} more")
+            else:
+                yield Static("No devices found matching your search.")
+
+            yield Label("Press Escape or Q to close", classes="hint")
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+
 class BluehoodApp(App):
     """Main Bluehood TUI application."""
 
@@ -289,11 +378,59 @@ class BluehoodApp(App):
     .ignored {
         color: $text-muted;
     }
+
+    #search-dialog {
+        align: center middle;
+        width: 60;
+        height: 16;
+        border: solid $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #search-dialog .title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #search-dialog .hint {
+        margin-top: 1;
+        color: $text-muted;
+    }
+
+    #search-dialog Input {
+        margin-bottom: 1;
+    }
+
+    #results-dialog {
+        align: center middle;
+        width: 80;
+        height: 30;
+        border: solid $primary;
+        background: $surface;
+        padding: 1 2;
+        overflow-y: auto;
+    }
+
+    #results-dialog .title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #results-dialog .subtitle {
+        margin-bottom: 1;
+    }
+
+    #results-dialog .hint {
+        margin-top: 1;
+        color: $text-muted;
+    }
     """
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
+        Binding("s", "search", "Search"),
         Binding("i", "toggle_ignore", "Toggle Ignore"),
         Binding("n", "set_name", "Set Name"),
         Binding("d", "show_detail", "Details"),
@@ -468,6 +605,58 @@ class BluehoodApp(App):
         """Toggle between showing all devices and only active."""
         self.show_ignored = not self.show_ignored
         self.run_worker(self.refresh_devices())
+
+    def action_search(self) -> None:
+        """Open search dialog."""
+        def on_search(params: Optional[dict]) -> None:
+            if params is None:
+                return  # Cancelled
+
+            async def do_search():
+                mac = params.get("mac")
+                start = params.get("start")
+                end = params.get("end")
+
+                # Parse datetime strings
+                start_iso = None
+                end_iso = None
+                if start:
+                    try:
+                        # Support both "YYYY-MM-DD HH:MM" and "YYYY-MM-DD"
+                        if len(start) == 10:
+                            start += " 00:00"
+                        dt = datetime.strptime(start, "%Y-%m-%d %H:%M")
+                        start_iso = dt.isoformat()
+                    except ValueError:
+                        self.update_status("Invalid start time format")
+                        return
+                if end:
+                    try:
+                        if len(end) == 10:
+                            end += " 23:59"
+                        dt = datetime.strptime(end, "%Y-%m-%d %H:%M")
+                        end_iso = dt.isoformat()
+                    except ValueError:
+                        self.update_status("Invalid end time format")
+                        return
+
+                results = await self.client.search(mac, start_iso, end_iso)
+
+                # Build query description
+                parts = []
+                if mac:
+                    parts.append(f"'{mac}'")
+                if start:
+                    parts.append(f"from {start}")
+                if end:
+                    parts.append(f"to {end}")
+                query_desc = " ".join(parts) if parts else "all devices"
+
+                self.push_screen(SearchResultsScreen(results, query_desc))
+
+            self.run_worker(do_search())
+
+        self.push_screen(SearchScreen(), on_search)
 
 
 def main() -> None:

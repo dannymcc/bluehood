@@ -191,6 +191,22 @@ class BluehoodDaemon:
                 return {"status": "ok", "daily": daily}
             return {"status": "error", "message": "Missing mac"}
 
+        elif cmd == "search":
+            mac_filter = request.get("mac")
+            start_time = request.get("start_time")
+            end_time = request.get("end_time")
+
+            # Parse datetime strings if provided
+            from datetime import datetime
+            start_dt = datetime.fromisoformat(start_time) if start_time else None
+            end_dt = datetime.fromisoformat(end_time) if end_time else None
+
+            results = await db.search_devices(mac_filter, start_dt, end_dt)
+            return {
+                "status": "ok",
+                "results": results,
+            }
+
         elif cmd == "status":
             return {
                 "status": "ok",
