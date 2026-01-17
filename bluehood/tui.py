@@ -320,178 +320,222 @@ class SearchResultsScreen(ModalScreen):
 class BluehoodApp(App):
     """Main Bluehood TUI application."""
 
-    TITLE = "BLUEHOOD"
+    TITLE = "Bluehood"
     SUB_TITLE = "Bluetooth Neighborhood Monitor"
 
     CSS = """
+    /* Clean, professional color scheme */
     Screen {
-        background: $surface;
+        background: #1e1e2e;
     }
 
     Header {
-        background: #1a1a2e;
-        color: #00d4ff;
+        background: #313244;
+        color: #cdd6f4;
+        dock: top;
+        height: 3;
+    }
+
+    Header.-tall {
+        height: 3;
     }
 
     HeaderTitle {
-        color: #00d4ff;
+        color: #89b4fa;
         text-style: bold;
+        padding: 1;
     }
 
     Footer {
-        background: #1a1a2e;
+        background: #313244;
     }
 
     FooterKey {
-        background: #16213e;
-        color: #00d4ff;
+        background: #45475a;
+        color: #cdd6f4;
+    }
+
+    Footer > .footer--key {
+        background: #45475a;
+        color: #89b4fa;
+        text-style: bold;
+    }
+
+    Footer > .footer--description {
+        color: #a6adc8;
     }
 
     #device-table {
         height: 100%;
-        background: #0f0f1a;
+        background: #1e1e2e;
+        scrollbar-background: #313244;
+        scrollbar-color: #45475a;
+    }
+
+    DataTable {
+        background: #1e1e2e;
     }
 
     DataTable > .datatable--header {
-        background: #16213e;
-        color: #00d4ff;
+        background: #313244;
+        color: #89b4fa;
         text-style: bold;
     }
 
     DataTable > .datatable--cursor {
-        background: #1a1a4e;
-        color: #00ff88;
+        background: #45475a;
+        color: #f5e0dc;
+        text-style: bold;
     }
 
     DataTable > .datatable--hover {
-        background: #1a1a3e;
+        background: #313244;
+    }
+
+    DataTable > .datatable--even-row {
+        background: #1e1e2e;
+    }
+
+    DataTable > .datatable--odd-row {
+        background: #232334;
     }
 
     #status-bar {
         dock: bottom;
         height: 1;
-        background: #16213e;
-        color: #00d4ff;
-        padding: 0 1;
+        background: #313244;
+        color: #a6adc8;
+        padding: 0 2;
     }
 
+    /* Dialog styling */
     #name-dialog {
         align: center middle;
         width: 60;
-        height: 10;
-        border: solid #00d4ff;
-        background: #1a1a2e;
+        height: 11;
+        border: round #89b4fa;
+        background: #313244;
         padding: 1 2;
     }
 
     #name-dialog Label {
         margin-bottom: 1;
-        color: #00d4ff;
+        color: #cdd6f4;
     }
 
     #name-dialog .hint {
         margin-top: 1;
-        color: #666688;
+        color: #6c7086;
     }
 
     #name-dialog Input {
-        background: #0f0f1a;
-        border: solid #00d4ff;
+        background: #1e1e2e;
+        border: tall #45475a;
+        color: #cdd6f4;
+    }
+
+    #name-dialog Input:focus {
+        border: tall #89b4fa;
     }
 
     #detail-dialog {
         align: center middle;
-        width: 78;
-        height: 38;
-        border: solid #00d4ff;
-        background: #1a1a2e;
+        width: 80;
+        height: 40;
+        border: round #89b4fa;
+        background: #313244;
         padding: 1 2;
         overflow-y: auto;
     }
 
     #detail-dialog .title {
         text-style: bold;
-        color: #00d4ff;
+        color: #89b4fa;
         margin-bottom: 1;
     }
 
     #detail-dialog .subtitle {
         margin-top: 1;
         text-style: bold;
-        color: #00ff88;
+        color: #a6e3a1;
     }
 
     #detail-dialog .hint {
         margin-top: 1;
-        color: #666688;
+        color: #6c7086;
     }
 
     #detail-dialog Static {
-        color: #ccccdd;
+        color: #cdd6f4;
     }
 
     .ignored {
-        color: #666688;
+        color: #6c7086;
     }
 
     #search-dialog {
         align: center middle;
         width: 65;
-        height: 16;
-        border: solid #00d4ff;
-        background: #1a1a2e;
+        height: 17;
+        border: round #89b4fa;
+        background: #313244;
         padding: 1 2;
     }
 
     #search-dialog Label {
-        color: #00d4ff;
+        color: #cdd6f4;
     }
 
     #search-dialog .title {
         text-style: bold;
-        color: #00d4ff;
+        color: #89b4fa;
         margin-bottom: 1;
     }
 
     #search-dialog .hint {
         margin-top: 1;
-        color: #666688;
+        color: #6c7086;
     }
 
     #search-dialog Input {
         margin-bottom: 1;
-        background: #0f0f1a;
-        border: solid #00d4ff;
+        background: #1e1e2e;
+        border: tall #45475a;
+        color: #cdd6f4;
+    }
+
+    #search-dialog Input:focus {
+        border: tall #89b4fa;
     }
 
     #results-dialog {
         align: center middle;
-        width: 85;
-        height: 32;
-        border: solid #00d4ff;
-        background: #1a1a2e;
+        width: 90;
+        height: 35;
+        border: round #89b4fa;
+        background: #313244;
         padding: 1 2;
         overflow-y: auto;
     }
 
     #results-dialog .title {
         text-style: bold;
-        color: #00d4ff;
+        color: #89b4fa;
         margin-bottom: 1;
     }
 
     #results-dialog .subtitle {
-        color: #00ff88;
+        color: #a6e3a1;
         margin-bottom: 1;
     }
 
     #results-dialog .hint {
         margin-top: 1;
-        color: #666688;
+        color: #6c7086;
     }
 
     #results-dialog Static {
-        color: #ccccdd;
+        color: #cdd6f4;
     }
     """
 
@@ -499,8 +543,9 @@ class BluehoodApp(App):
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("s", "search", "Search"),
-        Binding("i", "toggle_ignore", "Toggle Ignore"),
-        Binding("n", "set_name", "Set Name"),
+        Binding("enter", "show_detail", "View", show=False),
+        Binding("i", "toggle_ignore", "Ignore"),
+        Binding("n", "set_name", "Name"),
         Binding("d", "show_detail", "Details"),
         Binding("f", "toggle_filter", "Filter"),
     ]
@@ -513,16 +558,17 @@ class BluehoodApp(App):
         self.selected_mac: Optional[str] = None
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header(show_clock=True)
         yield DataTable(id="device-table")
-        yield Static("Connecting...", id="status-bar")
+        yield Static("Initializing...", id="status-bar")
         yield Footer()
 
     async def on_mount(self) -> None:
         """Initialize the app."""
         table = self.query_one("#device-table", DataTable)
         table.cursor_type = "row"
-        table.add_columns("MAC", "Vendor", "Name", "Sightings", "Last Seen", "Pattern")
+        table.zebra_stripes = True
+        table.add_columns("MAC Address", "Vendor", "Name", "Seen", "Last Active", "Pattern")
 
         # Connect to daemon
         if await self.client.connect():
@@ -540,8 +586,9 @@ class BluehoodApp(App):
     def update_status(self, message: str) -> None:
         """Update the status bar."""
         status = self.query_one("#status-bar", Static)
-        filter_text = "All" if self.show_ignored else "Active only"
-        status.update(f"{message} | Filter: {filter_text} | {len(self.devices)} devices")
+        filter_text = "All devices" if self.show_ignored else "Active only"
+        device_count = len(self.devices)
+        status.update(f" {message}  |  {device_count} devices  |  Filter: {filter_text}")
 
     async def refresh_devices(self) -> None:
         """Refresh the device list from daemon."""
