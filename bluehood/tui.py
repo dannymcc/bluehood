@@ -122,6 +122,15 @@ class DaemonClient:
         daily = response.get("daily", {})
         return {int(k): v for k, v in daily.items()}
 
+    async def get_sightings(self, mac: str, days: int = 7) -> list[dict]:
+        """Get recent sightings for a device."""
+        response = await self.send_command({
+            "cmd": "get_sightings",
+            "mac": mac,
+            "days": days,
+        })
+        return response.get("sightings", [])
+
 
 class NameInputScreen(ModalScreen[str]):
     """Modal screen for entering a device name."""
@@ -164,11 +173,13 @@ class DetailScreen(ModalScreen):
         Binding("q", "close", "Close"),
     ]
 
-    def __init__(self, device: dict, hourly: dict, daily: dict):
+    def __init__(self, device: dict, hourly: dict, daily: dict, sightings: list, pattern: str):
         super().__init__()
         self.device = device
         self.hourly = hourly
         self.daily = daily
+        self.sightings = sightings
+        self.pattern = pattern
 
     def compose(self) -> ComposeResult:
         d = self.device
@@ -191,13 +202,25 @@ class DetailScreen(ModalScreen):
             yield Static(f"Last seen: {last_seen}")
             yield Static(f"Total sightings: {d.get('total_sightings', 0)}")
 
-            yield Label("Hourly Activity (24h)", classes="subtitle")
+            yield Label("Pattern Analysis", classes="subtitle")
+            yield Static(f"  {self.pattern}")
+
+            yield Label("Hourly Activity (30 days)", classes="subtitle")
             yield Static(f"     0  3  6  9 12 15 18 21 24")
             yield Static(f"     {generate_hourly_heatmap(self.hourly)}")
 
-            yield Label("Daily Activity (week)", classes="subtitle")
+            yield Label("Daily Activity (30 days)", classes="subtitle")
             yield Static(f"     M  T  W  T  F  S  S")
             yield Static(f"     {generate_daily_heatmap(self.daily)}")
+
+            yield Label("Recent Sightings", classes="subtitle")
+            if self.sightings:
+                for s in self.sightings[:10]:  # Show last 10
+                    ts = datetime.fromisoformat(s["timestamp"]).strftime("%m-%d %H:%M")
+                    rssi = s.get("rssi", "?")
+                    yield Static(f"  {ts}  RSSI: {rssi} dBm")
+            else:
+                yield Static("  No recent sightings")
 
             yield Label("Press Escape or Q to close", classes="hint")
 
@@ -240,8 +263,8 @@ class BluehoodApp(App):
 
     #detail-dialog {
         align: center middle;
-        width: 70;
-        height: 25;
+        width: 75;
+        height: 35;
         border: solid $primary;
         background: $surface;
         padding: 1 2;
@@ -385,8 +408,10 @@ class BluehoodApp(App):
 
     @on(DataTable.RowSelected)
     def on_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Track selected row."""
+        """Open detail view when row is selected (Enter pressed)."""
         self.selected_mac = str(event.row_key.value) if event.row_key else None
+        if self.selected_mac:
+            self.run_worker(self.action_show_detail())
 
     def _get_selected_device(self) -> Optional[dict]:
         """Get the currently selected device."""
@@ -435,7 +460,9 @@ class BluehoodApp(App):
             mac = device.get("mac")
             hourly = await self.client.get_hourly(mac, 30)
             daily = await self.client.get_daily(mac, 30)
-            self.push_screen(DetailScreen(device, hourly, daily))
+            sightings = await self.client.get_sightings(mac, 7)
+            pattern = analyze_device_pattern(hourly, daily)
+            self.push_screen(DetailScreen(device, hourly, daily, sightings, pattern))
 
     def action_toggle_filter(self) -> None:
         """Toggle between showing all devices and only active."""
