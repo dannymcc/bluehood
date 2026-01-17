@@ -320,15 +320,58 @@ class SearchResultsScreen(ModalScreen):
 class BluehoodApp(App):
     """Main Bluehood TUI application."""
 
+    TITLE = "BLUEHOOD"
+    SUB_TITLE = "Bluetooth Neighborhood Monitor"
+
     CSS = """
+    Screen {
+        background: $surface;
+    }
+
+    Header {
+        background: #1a1a2e;
+        color: #00d4ff;
+    }
+
+    HeaderTitle {
+        color: #00d4ff;
+        text-style: bold;
+    }
+
+    Footer {
+        background: #1a1a2e;
+    }
+
+    FooterKey {
+        background: #16213e;
+        color: #00d4ff;
+    }
+
     #device-table {
         height: 100%;
+        background: #0f0f1a;
+    }
+
+    DataTable > .datatable--header {
+        background: #16213e;
+        color: #00d4ff;
+        text-style: bold;
+    }
+
+    DataTable > .datatable--cursor {
+        background: #1a1a4e;
+        color: #00ff88;
+    }
+
+    DataTable > .datatable--hover {
+        background: #1a1a3e;
     }
 
     #status-bar {
         dock: bottom;
         height: 1;
-        background: $surface;
+        background: #16213e;
+        color: #00d4ff;
         padding: 0 1;
     }
 
@@ -336,94 +379,119 @@ class BluehoodApp(App):
         align: center middle;
         width: 60;
         height: 10;
-        border: solid $primary;
-        background: $surface;
+        border: solid #00d4ff;
+        background: #1a1a2e;
         padding: 1 2;
     }
 
     #name-dialog Label {
         margin-bottom: 1;
+        color: #00d4ff;
     }
 
     #name-dialog .hint {
         margin-top: 1;
-        color: $text-muted;
+        color: #666688;
+    }
+
+    #name-dialog Input {
+        background: #0f0f1a;
+        border: solid #00d4ff;
     }
 
     #detail-dialog {
         align: center middle;
-        width: 75;
-        height: 35;
-        border: solid $primary;
-        background: $surface;
+        width: 78;
+        height: 38;
+        border: solid #00d4ff;
+        background: #1a1a2e;
         padding: 1 2;
         overflow-y: auto;
     }
 
     #detail-dialog .title {
         text-style: bold;
+        color: #00d4ff;
         margin-bottom: 1;
     }
 
     #detail-dialog .subtitle {
         margin-top: 1;
         text-style: bold;
+        color: #00ff88;
     }
 
     #detail-dialog .hint {
         margin-top: 1;
-        color: $text-muted;
+        color: #666688;
+    }
+
+    #detail-dialog Static {
+        color: #ccccdd;
     }
 
     .ignored {
-        color: $text-muted;
+        color: #666688;
     }
 
     #search-dialog {
         align: center middle;
-        width: 60;
+        width: 65;
         height: 16;
-        border: solid $primary;
-        background: $surface;
+        border: solid #00d4ff;
+        background: #1a1a2e;
         padding: 1 2;
+    }
+
+    #search-dialog Label {
+        color: #00d4ff;
     }
 
     #search-dialog .title {
         text-style: bold;
+        color: #00d4ff;
         margin-bottom: 1;
     }
 
     #search-dialog .hint {
         margin-top: 1;
-        color: $text-muted;
+        color: #666688;
     }
 
     #search-dialog Input {
         margin-bottom: 1;
+        background: #0f0f1a;
+        border: solid #00d4ff;
     }
 
     #results-dialog {
         align: center middle;
-        width: 80;
-        height: 30;
-        border: solid $primary;
-        background: $surface;
+        width: 85;
+        height: 32;
+        border: solid #00d4ff;
+        background: #1a1a2e;
         padding: 1 2;
         overflow-y: auto;
     }
 
     #results-dialog .title {
         text-style: bold;
+        color: #00d4ff;
         margin-bottom: 1;
     }
 
     #results-dialog .subtitle {
+        color: #00ff88;
         margin-bottom: 1;
     }
 
     #results-dialog .hint {
         margin-top: 1;
-        color: $text-muted;
+        color: #666688;
+    }
+
+    #results-dialog Static {
+        color: #ccccdd;
     }
     """
 
@@ -516,9 +584,9 @@ class BluehoodApp(App):
             else:
                 pattern = ""  # Keep existing pattern on updates
 
-            # Truncate long values
-            vendor = vendor[:20] if len(vendor) > 20 else vendor
-            name = name[:15] if len(name) > 15 else name
+            # Truncate long values for display
+            vendor = vendor[:18] if len(vendor) > 18 else vendor
+            name = name[:25] if len(name) > 25 else name
 
             if mac in existing_macs:
                 # Update existing row

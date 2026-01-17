@@ -98,8 +98,8 @@ class BluetoothScanner:
 
     async def _get_vendor(self, mac: str) -> Optional[str]:
         """Look up vendor from MAC address OUI."""
-        # Check cache first
-        if mac in self._vendor_cache:
+        # Check cache first - only return if we have a successful lookup
+        if mac in self._vendor_cache and self._vendor_cache[mac] is not None:
             return self._vendor_cache[mac]
 
         if not HAS_MAC_LOOKUP:
@@ -114,8 +114,8 @@ class BluetoothScanner:
             self._vendor_cache[mac] = vendor
             return vendor
         except Exception:
-            # Vendor not found or lookup failed
-            self._vendor_cache[mac] = None
+            # Vendor not found - don't cache so we can retry later
+            # (vendor database may be updated)
             return None
 
     async def scan(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
