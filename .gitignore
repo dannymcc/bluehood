@@ -22,3 +22,9 @@ wheels/
 .venv
 venv/
 ENV/
+
+# Database files - contains device tracking data
+*.db
+*.sqlite
+*.sqlite3
+bluehood.db

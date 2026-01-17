@@ -16,6 +16,7 @@ class Device:
     friendly_name: Optional[str] = None
     device_type: Optional[str] = None
     ignored: bool = False
+    watched: bool = False  # Device of Interest
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
     total_sightings: int = 0
@@ -65,6 +66,12 @@ async def init_db() -> None:
             await db.commit()
         except Exception:
             pass  # Column already exists
+        # Migration: add watched column if missing
+        try:
+            await db.execute("ALTER TABLE devices ADD COLUMN watched INTEGER DEFAULT 0")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
         await db.commit()
 
 
@@ -83,6 +90,7 @@ async def get_device(mac: str) -> Optional[Device]:
                     friendly_name=row["friendly_name"],
                     device_type=row["device_type"] if "device_type" in row.keys() else None,
                     ignored=bool(row["ignored"]),
+                    watched=bool(row["watched"]) if "watched" in row.keys() else False,
                     first_seen=datetime.fromisoformat(row["first_seen"]) if row["first_seen"] else None,
                     last_seen=datetime.fromisoformat(row["last_seen"]) if row["last_seen"] else None,
                     total_sightings=row["total_sightings"],
@@ -108,6 +116,7 @@ async def get_all_devices(include_ignored: bool = True) -> list[Device]:
                     friendly_name=row["friendly_name"],
                     device_type=row["device_type"] if "device_type" in row.keys() else None,
                     ignored=bool(row["ignored"]),
+                    watched=bool(row["watched"]) if "watched" in row.keys() else False,
                     first_seen=datetime.fromisoformat(row["first_seen"]) if row["first_seen"] else None,
                     last_seen=datetime.fromisoformat(row["last_seen"]) if row["last_seen"] else None,
                     total_sightings=row["total_sightings"],
@@ -183,6 +192,16 @@ async def set_ignored(mac: str, ignored: bool) -> None:
         await db.execute(
             "UPDATE devices SET ignored = ? WHERE mac = ?",
             (1 if ignored else 0, mac)
+        )
+        await db.commit()
+
+
+async def set_watched(mac: str, watched: bool) -> None:
+    """Set whether a device is a Device of Interest (watched)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE devices SET watched = ? WHERE mac = ?",
+            (1 if watched else 0, mac)
         )
         await db.commit()
 

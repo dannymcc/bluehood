@@ -570,6 +570,7 @@ HTML_TEMPLATE = """
 
         <div class="filter-tabs">
             <button class="filter-tab active" data-filter="all">All Devices</button>
+            <button class="filter-tab" data-filter="watched" style="color: var(--accent-yellow);">★ Watching</button>
             <button class="filter-tab" data-filter="phone">Phones</button>
             <button class="filter-tab" data-filter="laptop">Laptops</button>
             <button class="filter-tab" data-filter="smart">IoT</button>
@@ -687,7 +688,11 @@ HTML_TEMPLATE = """
 
             let filtered = sourceDevices.filter(d => {
                 // Apply type filter
-                if (currentFilter !== 'all' && d.device_type !== currentFilter) return false;
+                if (currentFilter === 'watched') {
+                    if (!d.watched) return false;
+                } else if (currentFilter !== 'all' && d.device_type !== currentFilter) {
+                    return false;
+                }
 
                 // Apply search
                 if (searchTerm) {
@@ -706,10 +711,11 @@ HTML_TEMPLATE = """
                 const typeClass = getTypeClass(d.device_type);
                 const lastSeen = formatLastSeen(d.last_seen);
                 const isRecent = isRecentlySeen(d.last_seen);
+                const watchedStar = d.watched ? '<span style="color: var(--accent-yellow); margin-right: 0.25rem;">★</span>' : '';
 
                 return `
                     <tr onclick="showDevice('${d.mac}')" style="cursor: pointer;">
-                        <td><span class="device-type ${typeClass}">${d.type_icon} ${d.type_label}</span></td>
+                        <td><span class="device-type ${typeClass}">${watchedStar}${d.type_icon} ${d.type_label}</span></td>
                         <td class="mac-address">${d.mac}</td>
                         <td class="device-vendor">${d.vendor || (d.randomized_mac ? '<span style="color: var(--text-muted); font-style: italic;">Randomized</span>' : 'Unknown')}</td>
                         <td class="device-name">${d.friendly_name || '-'}</td>
@@ -784,7 +790,17 @@ HTML_TEMPLATE = """
                 rssiDisplay = `<span style="color: ${color}">${rssi} dBm (${strength})</span>`;
             }
 
+            // Watch button
+            const watchBtnText = d.watched ? '★ Watching' : '☆ Watch';
+            const watchBtnStyle = d.watched
+                ? 'background: var(--accent-yellow); color: #000; border-color: var(--accent-yellow);'
+                : '';
+
             content.innerHTML = `
+                <div class="detail-row" style="justify-content: flex-start; gap: 1rem;">
+                    <button class="btn" id="watch-btn" style="${watchBtnStyle}" onclick="toggleWatch('${d.mac}')">${watchBtnText}</button>
+                    <span style="color: var(--text-muted); font-size: 0.8rem;">Mark as Device of Interest</span>
+                </div>
                 <div class="detail-row">
                     <span class="detail-label">MAC Address</span>
                     <span class="detail-value">${d.mac}</span>
@@ -838,6 +854,34 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
             `;
+        }
+
+        async function toggleWatch(mac) {
+            try {
+                const response = await fetch('/api/device/' + encodeURIComponent(mac) + '/watch', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                // Update button appearance
+                const btn = document.getElementById('watch-btn');
+                if (data.watched) {
+                    btn.textContent = '★ Watching';
+                    btn.style.background = 'var(--accent-yellow)';
+                    btn.style.color = '#000';
+                    btn.style.borderColor = 'var(--accent-yellow)';
+                } else {
+                    btn.textContent = '☆ Watch';
+                    btn.style.background = '';
+                    btn.style.color = '';
+                    btn.style.borderColor = '';
+                }
+
+                // Refresh the device list to update watched status
+                refreshDevices();
+            } catch (error) {
+                console.error('Error toggling watch:', error);
+            }
         }
 
         function closeModal() {
@@ -898,6 +942,7 @@ class WebServer:
         self.app.router.add_get("/", self.index)
         self.app.router.add_get("/api/devices", self.api_devices)
         self.app.router.add_get("/api/device/{mac}", self.api_device)
+        self.app.router.add_post("/api/device/{mac}/watch", self.api_toggle_watch)
         self.app.router.add_get("/api/search", self.api_search)
         self.app.router.add_get("/api/stats", self.api_stats)
 
@@ -943,6 +988,7 @@ class WebServer:
                 "type_icon": get_type_icon(device_type),
                 "type_label": get_type_label(device_type),
                 "ignored": d.ignored,
+                "watched": d.watched,
                 "randomized_mac": randomized,
                 "first_seen": d.first_seen.isoformat() if d.first_seen else None,
                 "last_seen": d.last_seen.isoformat() if d.last_seen else None,
@@ -984,6 +1030,7 @@ class WebServer:
                 "friendly_name": device.friendly_name,
                 "device_type": device_type,
                 "ignored": device.ignored,
+                "watched": device.watched,
                 "first_seen": device.first_seen.isoformat() if device.first_seen else None,
                 "last_seen": device.last_seen.isoformat() if device.last_seen else None,
                 "total_sightings": device.total_sightings,
@@ -993,6 +1040,23 @@ class WebServer:
             "avg_rssi": avg_rssi,
             "hourly_heatmap": generate_hourly_heatmap(hourly),
             "daily_heatmap": generate_daily_heatmap(daily),
+        })
+
+    async def api_toggle_watch(self, request: web.Request) -> web.Response:
+        """Toggle watched status for a device."""
+        mac = request.match_info["mac"]
+        device = await db.get_device(mac)
+
+        if not device:
+            return web.json_response({"error": "Device not found"}, status=404)
+
+        # Toggle the watched status
+        new_status = not device.watched
+        await db.set_watched(mac, new_status)
+
+        return web.json_response({
+            "mac": mac,
+            "watched": new_status,
         })
 
     def _analyze_pattern(self, hourly: dict, daily: dict, sighting_count: int) -> str:
