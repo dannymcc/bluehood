@@ -145,7 +145,13 @@ class BluetoothScanner:
         return vendor
 
     async def _get_vendor_online(self, mac: str) -> Optional[str]:
-        """Look up vendor using MACVendors.com API."""
+        """Look up vendor using MACVendors.com API.
+
+        Only sends the OUI (first 3 bytes) to protect privacy.
+        """
+        # Extract OUI (first 3 bytes / 6 hex chars) for privacy
+        oui = mac[:8]  # e.g., "AA:BB:CC"
+
         # Rate limit: 1 request per second
         if hasattr(self, '_last_api_call'):
             elapsed = asyncio.get_event_loop().time() - self._last_api_call
@@ -155,7 +161,7 @@ class BluetoothScanner:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"{MACVENDORS_API_URL}{mac}",
+                    f"{MACVENDORS_API_URL}{oui}",
                     timeout=aiohttp.ClientTimeout(total=5)
                 ) as response:
                     self._last_api_call = asyncio.get_event_loop().time()
@@ -163,17 +169,17 @@ class BluetoothScanner:
                         vendor = await response.text()
                         return vendor.strip() if vendor else None
                     elif response.status == 404:
-                        return None  # MAC not found in database
+                        return None  # OUI not found in database
                     elif response.status == 429:
                         logger.debug("Vendor API rate limited")
                         return None
                     else:
                         return None
         except asyncio.TimeoutError:
-            logger.debug(f"Vendor API timeout for {mac}")
+            logger.debug(f"Vendor API timeout for {oui}")
             return None
         except Exception as e:
-            logger.debug(f"Vendor API error for {mac}: {e}")
+            logger.debug(f"Vendor API error for {oui}: {e}")
             return None
 
     async def scan(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
