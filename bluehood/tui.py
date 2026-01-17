@@ -378,6 +378,11 @@ class BluehoodApp(App):
         self.devices = new_devices
         self.update_status("Refreshed")
 
+    @on(DataTable.RowHighlighted)
+    def on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """Track highlighted row (cursor position)."""
+        self.selected_mac = str(event.row_key.value) if event.row_key else None
+
     @on(DataTable.RowSelected)
     def on_row_selected(self, event: DataTable.RowSelected) -> None:
         """Track selected row."""
