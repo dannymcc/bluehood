@@ -111,20 +111,31 @@ async def upsert_device(mac: str, vendor: Optional[str] = None, rssi: Optional[i
     now = datetime.now()
 
     async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
         # Check if device exists
         async with db.execute("SELECT * FROM devices WHERE mac = ?", (mac,)) as cursor:
             existing = await cursor.fetchone()
 
         if existing:
-            # Update existing device
-            await db.execute(
-                """
-                UPDATE devices
-                SET last_seen = ?, total_sightings = total_sightings + 1
-                WHERE mac = ?
-                """,
-                (now.isoformat(), mac)
-            )
+            # Update existing device - also update vendor if we have one and device doesn't
+            if vendor and not existing["vendor"]:
+                await db.execute(
+                    """
+                    UPDATE devices
+                    SET last_seen = ?, total_sightings = total_sightings + 1, vendor = ?
+                    WHERE mac = ?
+                    """,
+                    (now.isoformat(), vendor, mac)
+                )
+            else:
+                await db.execute(
+                    """
+                    UPDATE devices
+                    SET last_seen = ?, total_sightings = total_sightings + 1
+                    WHERE mac = ?
+                    """,
+                    (now.isoformat(), mac)
+                )
         else:
             # Insert new device
             await db.execute(
