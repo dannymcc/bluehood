@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+import aiohttp
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
@@ -15,6 +16,9 @@ try:
     HAS_MAC_LOOKUP = True
 except ImportError:
     HAS_MAC_LOOKUP = False
+
+# Online API for vendor lookup fallback
+MACVENDORS_API_URL = "https://api.macvendors.com/"
 
 from .config import SCAN_DURATION, BLUETOOTH_ADAPTER
 
@@ -102,20 +106,48 @@ class BluetoothScanner:
         if mac in self._vendor_cache and self._vendor_cache[mac] is not None:
             return self._vendor_cache[mac]
 
-        if not HAS_MAC_LOOKUP:
-            return None
+        vendor = None
 
-        try:
-            if self._mac_lookup is None:
-                await self._ensure_vendor_db()
-                self._mac_lookup = AsyncMacLookup()
+        # Try local database first
+        if HAS_MAC_LOOKUP:
+            try:
+                if self._mac_lookup is None:
+                    await self._ensure_vendor_db()
+                    self._mac_lookup = AsyncMacLookup()
 
-            vendor = await self._mac_lookup.lookup(mac)
+                vendor = await self._mac_lookup.lookup(mac)
+            except Exception:
+                pass  # Fall through to online API
+
+        # Fallback to online API if local lookup failed
+        if vendor is None:
+            vendor = await self._get_vendor_online(mac)
+
+        if vendor:
             self._vendor_cache[mac] = vendor
-            return vendor
-        except Exception:
-            # Vendor not found - don't cache so we can retry later
-            # (vendor database may be updated)
+
+        return vendor
+
+    async def _get_vendor_online(self, mac: str) -> Optional[str]:
+        """Look up vendor using MACVendors.com API."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{MACVENDORS_API_URL}{mac}",
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
+                    if response.status == 200:
+                        vendor = await response.text()
+                        return vendor.strip() if vendor else None
+                    elif response.status == 404:
+                        return None  # MAC not found in database
+                    else:
+                        return None
+        except asyncio.TimeoutError:
+            logger.debug(f"Vendor API timeout for {mac}")
+            return None
+        except Exception as e:
+            logger.debug(f"Vendor API error for {mac}: {e}")
             return None
 
     async def scan(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
