@@ -1,5 +1,6 @@
 """Bluehood daemon - continuous Bluetooth scanning service."""
 
+import argparse
 import asyncio
 import json
 import logging
@@ -7,10 +8,11 @@ import os
 import signal
 import sys
 from pathlib import Path
+from typing import Optional
 
 from . import db
 from .config import SCAN_INTERVAL, SOCKET_PATH
-from .scanner import BluetoothScanner, ScannedDevice
+from .scanner import BluetoothScanner, ScannedDevice, list_adapters
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,8 +25,8 @@ logger = logging.getLogger(__name__)
 class BluehoodDaemon:
     """Main daemon process for Bluetooth scanning."""
 
-    def __init__(self):
-        self.scanner = BluetoothScanner()
+    def __init__(self, adapter: Optional[str] = None):
+        self.scanner = BluetoothScanner(adapter=adapter)
         self.running = False
         self.clients: list[asyncio.StreamWriter] = []
         self._server: asyncio.Server | None = None
@@ -238,7 +240,31 @@ class BluehoodDaemon:
 
 def main() -> None:
     """Entry point for bluehood-daemon."""
-    daemon = BluehoodDaemon()
+    parser = argparse.ArgumentParser(
+        description="Bluehood Bluetooth neighborhood monitor daemon"
+    )
+    parser.add_argument(
+        "-a", "--adapter",
+        help="Bluetooth adapter to use (e.g., hci0)"
+    )
+    parser.add_argument(
+        "-l", "--list-adapters",
+        action="store_true",
+        help="List available Bluetooth adapters and exit"
+    )
+    args = parser.parse_args()
+
+    if args.list_adapters:
+        adapters = list_adapters()
+        if adapters:
+            print("Available Bluetooth adapters:")
+            for adapter in adapters:
+                print(f"  {adapter.name}: {adapter.address} ({adapter.alias})")
+        else:
+            print("No Bluetooth adapters found")
+        return
+
+    daemon = BluehoodDaemon(adapter=args.adapter)
     try:
         asyncio.run(daemon.start())
     except KeyboardInterrupt:

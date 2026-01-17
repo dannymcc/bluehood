@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import subprocess
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -15,9 +16,17 @@ try:
 except ImportError:
     HAS_MAC_LOOKUP = False
 
-from .config import SCAN_DURATION
+from .config import SCAN_DURATION, BLUETOOTH_ADAPTER
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BluetoothAdapter:
+    """Represents a Bluetooth adapter."""
+    name: str  # e.g., "hci0"
+    address: str  # MAC address
+    alias: str  # Friendly name
 
 
 @dataclass
@@ -29,10 +38,50 @@ class ScannedDevice:
     vendor: Optional[str] = None
 
 
+def list_adapters() -> list[BluetoothAdapter]:
+    """List available Bluetooth adapters."""
+    adapters = []
+    try:
+        # Use bluetoothctl to list adapters
+        result = subprocess.run(
+            ["bluetoothctl", "list"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        for line in result.stdout.strip().split("\n"):
+            if line.startswith("Controller"):
+                parts = line.split()
+                if len(parts) >= 3:
+                    address = parts[1]
+                    alias = " ".join(parts[2:])
+                    # Try to get hci name
+                    hci_result = subprocess.run(
+                        ["hcitool", "dev"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    hci_name = "hci0"  # default
+                    for hci_line in hci_result.stdout.strip().split("\n"):
+                        if address in hci_line:
+                            hci_name = hci_line.split()[0]
+                            break
+                    adapters.append(BluetoothAdapter(
+                        name=hci_name,
+                        address=address,
+                        alias=alias
+                    ))
+    except Exception as e:
+        logger.warning(f"Could not list adapters: {e}")
+    return adapters
+
+
 class BluetoothScanner:
     """Bluetooth LE scanner."""
 
-    def __init__(self):
+    def __init__(self, adapter: Optional[str] = None):
+        self.adapter = adapter or BLUETOOTH_ADAPTER
         self._mac_lookup: Optional[AsyncMacLookup] = None
         self._vendor_cache: dict[str, Optional[str]] = {}
 
@@ -62,10 +111,15 @@ class BluetoothScanner:
         devices: list[ScannedDevice] = []
 
         try:
-            discovered = await BleakScanner.discover(
-                timeout=duration,
-                return_adv=True
-            )
+            # Build scanner kwargs
+            kwargs = {
+                "timeout": duration,
+                "return_adv": True,
+            }
+            if self.adapter:
+                kwargs["adapter"] = self.adapter
+
+            discovered = await BleakScanner.discover(**kwargs)
 
             for device, adv_data in discovered.values():
                 mac = device.address

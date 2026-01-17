@@ -18,3 +18,6 @@ SCAN_INTERVAL = 10
 
 # How long to scan for each cycle (seconds)
 SCAN_DURATION = 5
+
+# Bluetooth adapter (None = auto-select, or specify like "hci0")
+BLUETOOTH_ADAPTER = os.environ.get("BLUEHOOD_ADAPTER", None)
