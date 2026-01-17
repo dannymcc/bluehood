@@ -1,3 +1,0 @@
-[console_scripts]
-bluehood = bluehood.tui:main
-bluehood-daemon = bluehood.daemon:main
