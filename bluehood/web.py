@@ -1097,9 +1097,15 @@ class WebServer:
 
     async def start(self) -> web.AppRunner:
         """Start the web server."""
-        runner = web.AppRunner(self.app)
-        await runner.setup()
-        site = web.TCPSite(runner, self.host, self.port)
+        self._runner = web.AppRunner(self.app)
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, self.host, self.port)
         await site.start()
         logger.info(f"Web dashboard available at http://{self.host}:{self.port}")
-        return runner
+        return self._runner
+
+    async def stop(self) -> None:
+        """Stop the web server."""
+        if hasattr(self, '_runner') and self._runner:
+            await self._runner.cleanup()
+            logger.info("Web server stopped")
