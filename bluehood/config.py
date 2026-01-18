@@ -7,8 +7,8 @@ from pathlib import Path
 DATA_DIR = Path(os.environ.get("BLUEHOOD_DATA_DIR", Path.home() / ".local" / "share" / "bluehood"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Database path
-DB_PATH = DATA_DIR / "bluehood.db"
+# Database path (can be overridden directly)
+DB_PATH = Path(os.environ.get("BLUEHOOD_DB_PATH", DATA_DIR / "bluehood.db"))
 
 # Socket path for daemon communication
 SOCKET_PATH = Path("/tmp/bluehood.sock")

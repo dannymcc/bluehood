@@ -1,0 +1,23 @@
+services:
+  bluehood:
+    build: .
+    container_name: bluehood
+    restart: unless-stopped
+
+    # Required for Bluetooth access
+    network_mode: host
+    privileged: true
+
+    # Mount D-Bus socket for BlueZ communication
+    volumes:
+      - /var/run/dbus:/var/run/dbus:ro
+      - bluehood-data:/data
+
+    # Optional: specify Bluetooth adapter (default: auto-detect)
+    # environment:
+    #   - BLUEHOOD_ADAPTER=hci0
+
+    # Web dashboard available at http://localhost:8080
+
+volumes:
+  bluehood-data:

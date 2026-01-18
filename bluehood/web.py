@@ -22,7 +22,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bluehood - Bluetooth Intelligence</title>
+    <title>Bluehood - Bluetooth Neighborhood</title>
     <style>
         :root {
             --bg-primary: #0a0a0f;
@@ -634,9 +634,42 @@ HTML_TEMPLATE = """
     </main>
 
     <footer class="footer">
-        <p>Bluehood v0.1.0 - Bluetooth Neighborhood Monitor</p>
-        <p>Open source on <a href="https://github.com/dannymcc/bluehood">GitHub</a></p>
+        <p>Bluehood v0.2.0 - Bluetooth Neighborhood</p>
+        <p>
+            <a href="https://github.com/dannymcc/bluehood">GitHub</a>
+            <span style="margin: 0 0.5rem;">|</span>
+            <a href="#" onclick="showAbout(); return false;">About</a>
+        </p>
     </footer>
+
+    <!-- About Modal -->
+    <div class="modal-overlay" id="about-modal" style="display: none;">
+        <div class="modal" style="max-width: 600px;">
+            <div class="modal-header">
+                <div class="modal-title">About Bluehood</div>
+                <button class="modal-close" onclick="closeAbout()">&times;</button>
+            </div>
+            <div class="modal-body" style="line-height: 1.7;">
+                <p style="margin-bottom: 1rem;">
+                    This project was inspired by the <a href="https://whisperpair.eu/" target="_blank">WhisperPair vulnerability</a>
+                    (<a href="https://nvd.nist.gov/vuln/detail/CVE-2025-36911" target="_blank">CVE-2025-36911</a>),
+                    which highlighted privacy risks in Bluetooth devices.
+                </p>
+                <p style="margin-bottom: 1rem;">
+                    Thousands of Bluetooth devices surround us: phones, cars, TVs, headphones, hearing aids, delivery vehicles.
+                    Bluehood demonstrates how simple it is to passively detect these devices and observe patterns in their presence.
+                </p>
+                <p style="margin-bottom: 1rem;">
+                    With enough data, you could potentially understand daily routines, detect visitors,
+                    or identify patterns based on device presence. This metadata can reveal surprisingly
+                    personal information without any active interaction.
+                </p>
+                <p style="color: var(--text-muted); font-size: 0.9rem;">
+                    Bluehood is an educational tool to raise awareness about Bluetooth privacy.
+                </p>
+            </div>
+        </div>
+    </div>
 
     <!-- Device Detail Modal -->
     <div class="modal-overlay" id="device-modal">
@@ -950,6 +983,14 @@ HTML_TEMPLATE = """
 
         function closeModal() {
             document.getElementById('device-modal').classList.remove('active');
+        }
+
+        function showAbout() {
+            document.getElementById('about-modal').style.display = 'flex';
+        }
+
+        function closeAbout() {
+            document.getElementById('about-modal').style.display = 'none';
         }
 
         function exportData() {
