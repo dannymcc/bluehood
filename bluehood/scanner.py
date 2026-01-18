@@ -150,10 +150,14 @@ class BluetoothScanner:
             return
 
         try:
-            # Update vendors synchronously on first use
+            # Run the sync update in a thread pool to avoid event loop conflict
             logger.info("Updating MAC vendor database...")
-            mac_lookup = MacLookup()
-            mac_lookup.update_vendors()
+
+            def update_sync():
+                mac_lookup = MacLookup()
+                mac_lookup.update_vendors()
+
+            await asyncio.to_thread(update_sync)
             self._vendors_updated = True
             logger.info("MAC vendor database updated")
         except Exception as e:
