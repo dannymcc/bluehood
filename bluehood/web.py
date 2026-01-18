@@ -573,7 +573,7 @@ HTML_TEMPLATE = """
     <main class="main">
         <div class="stats-grid">
             <div class="stat-card">
-                <div class="stat-label">Total Devices</div>
+                <div class="stat-label">Identified Devices</div>
                 <div class="stat-value blue" id="stat-total">--</div>
             </div>
             <div class="stat-card">
@@ -585,8 +585,8 @@ HTML_TEMPLATE = """
                 <div class="stat-value purple" id="stat-new-hour">--</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Total Sightings</div>
-                <div class="stat-value yellow" id="stat-sightings">--</div>
+                <div class="stat-label">Randomized (Hidden)</div>
+                <div class="stat-value" style="color: var(--text-muted);" id="stat-randomized">--</div>
             </div>
         </div>
 
@@ -676,7 +676,7 @@ HTML_TEMPLATE = """
             document.getElementById('stat-total').textContent = data.total || 0;
             document.getElementById('stat-today').textContent = data.active_today || 0;
             document.getElementById('stat-new-hour').textContent = data.new_past_hour || 0;
-            document.getElementById('stat-sightings').textContent = data.total_sightings || 0;
+            document.getElementById('stat-randomized').textContent = data.randomized_count || 0;
         }
 
         async function searchByDateRange() {
@@ -747,7 +747,7 @@ HTML_TEMPLATE = """
                     <tr onclick="showDevice('${d.mac}')" style="cursor: pointer;">
                         <td><span class="device-type ${typeClass}">${watchedStar}${d.type_icon} ${d.type_label}</span></td>
                         <td class="mac-address">${d.mac}</td>
-                        <td class="device-vendor">${d.vendor || (d.randomized_mac ? '<span style="color: var(--text-muted); font-style: italic;">Randomized</span>' : 'Unknown')}</td>
+                        <td class="device-vendor">${d.vendor || 'Unknown'}</td>
                         <td class="device-name">${d.friendly_name || '-'}</td>
                         <td><span class="sightings-badge">${d.total_sightings}</span></td>
                         <td class="last-seen ${isRecent ? 'recent' : ''}">${lastSeen}</td>
@@ -1025,6 +1025,8 @@ class WebServer:
         active_today = 0
         new_past_hour = 0
         total_sightings = 0
+        randomized_count = 0
+        identified_count = 0
         type_set = set()
 
         device_list = []
@@ -1037,14 +1039,20 @@ class WebServer:
             # Check if MAC is randomized (privacy feature)
             randomized = is_randomized_mac(d.mac)
 
+            if randomized:
+                randomized_count += 1
+                continue  # Skip randomized MACs from the main list
+
+            identified_count += 1
+
             if d.last_seen and d.last_seen.date() == today:
                 active_today += 1
 
-            # Count devices first seen in the past hour (exclude randomized MACs - they rotate frequently)
-            if d.first_seen and d.first_seen >= one_hour_ago and not randomized:
+            # Count devices first seen in the past hour
+            if d.first_seen and d.first_seen >= one_hour_ago:
                 new_past_hour += 1
 
-            vendor_display = d.vendor if d.vendor else ("Randomized MAC" if randomized else None)
+            vendor_display = d.vendor
 
             device_list.append({
                 "mac": d.mac,
@@ -1055,7 +1063,7 @@ class WebServer:
                 "type_label": get_type_label(device_type),
                 "ignored": d.ignored,
                 "watched": d.watched,
-                "randomized_mac": randomized,
+                "randomized_mac": False,
                 "first_seen": d.first_seen.isoformat() if d.first_seen else None,
                 "last_seen": d.last_seen.isoformat() if d.last_seen else None,
                 "total_sightings": d.total_sightings,
@@ -1065,10 +1073,10 @@ class WebServer:
 
         return web.json_response({
             "devices": device_list,
-            "total": len(devices),
+            "total": identified_count,
+            "randomized_count": randomized_count,
             "active_today": active_today,
             "new_past_hour": new_past_hour,
-            "total_sightings": total_sightings,
         })
 
     async def api_device(self, request: web.Request) -> web.Response:
