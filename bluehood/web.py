@@ -745,6 +745,13 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
             </div>
+
+            <div class="panel">
+                <div class="panel-header">Display</div>
+                <button class="filter-btn" id="view-toggle" onclick="toggleViewMode()" style="width: 100%; justify-content: center;">
+                    ☰ Compact View
+                </button>
+            </div>
         </aside>
 
         <main class="content">
@@ -825,6 +832,21 @@ HTML_TEMPLATE = """
         let allDevices = [];
         let currentFilter = 'all';
         let dateFilteredDevices = null;
+        let compactView = localStorage.getItem('bluehood_compact_view') === 'true';
+
+        function toggleViewMode() {
+            compactView = !compactView;
+            localStorage.setItem('bluehood_compact_view', compactView);
+            updateViewToggle();
+            renderDevices();
+        }
+
+        function updateViewToggle() {
+            const btn = document.getElementById('view-toggle');
+            if (btn) {
+                btn.innerHTML = compactView ? '◫ Detailed View' : '☰ Compact View';
+            }
+        }
 
         function showShortcutsModal() {
             document.getElementById('shortcuts-modal').classList.add('active');
@@ -923,6 +945,17 @@ HTML_TEMPLATE = """
                 const isRecent = isRecentlySeen(d.last_seen);
                 const watchedStar = d.watched ? '<span class="watched-star">★</span>' : '';
 
+                if (compactView) {
+                    // Compact: Type, Name/MAC, Last Seen
+                    const displayName = d.friendly_name || d.vendor || d.mac;
+                    return '<tr onclick="showDevice(\\'' + d.mac + '\\')" style="height: auto;">' +
+                        '<td style="padding: 0.4rem 0.5rem;"><span class="type-badge ' + typeClass + '" style="font-size: 0.65rem; padding: 0.15rem 0.4rem;">' + watchedStar + d.type_icon + '</span></td>' +
+                        '<td colspan="3" style="padding: 0.4rem 0.5rem; font-size: 0.75rem;">' + displayName + '</td>' +
+                        '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;">' + d.total_sightings + '</td>' +
+                        '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;" class="' + (isRecent ? 'recent' : '') + '">' + lastSeen + '</td>' +
+                        '</tr>';
+                }
+
                 return '<tr onclick="showDevice(\\'' + d.mac + '\\')">' +
                     '<td><span class="type-badge ' + typeClass + '">' + watchedStar + d.type_icon + ' ' + d.type_label + '</span></td>' +
                     '<td class="mac-addr">' + d.mac + '</td>' +
@@ -1003,6 +1036,7 @@ HTML_TEMPLATE = """
                 '<div class="detail-item full"><div class="detail-label">Behavioral Pattern</div><div class="detail-value">' + (data.pattern || 'Insufficient data') + '</div></div>' +
                 '<div class="detail-item full"><div class="detail-label">BLE Service Fingerprint</div><div class="detail-value mono" style="font-size:0.75rem;">' + (data.uuid_names && data.uuid_names.length > 0 ? data.uuid_names.join(', ') : '—') + '</div></div>' +
                 '<div class="detail-item full"><div class="detail-label">Operator Notes</div><textarea class="form-input" id="device-notes" rows="2" style="font-size: 0.8rem; resize: vertical;" placeholder="Add notes...">' + (d.notes || '') + '</textarea><button class="btn" style="margin-top: 0.5rem;" onclick="saveNotes(\\'' + d.mac + '\\')">Save Notes</button></div>' +
+                '<div class="detail-item full"><div class="detail-label">Assign to Group</div><select class="form-input" id="device-group" onchange="setDeviceGroup(\\'' + d.mac + '\\', this.value)" style="font-size: 0.8rem;"><option value="">No group</option></select></div>' +
                 '</div>' +
                 '<div class="heatmap-section">' +
                 '<div class="heatmap-title">Dwell Time Analysis (30d)</div>' +
@@ -1032,6 +1066,37 @@ HTML_TEMPLATE = """
             loadRssiChart(d.mac);
             loadDwellStats(d.mac);
             loadCorrelatedDevices(d.mac);
+            loadGroupsForDevice(d.group_id);
+        }
+
+        let cachedGroups = [];
+
+        async function loadGroupsForDevice(currentGroupId) {
+            const select = document.getElementById('device-group');
+            if (!select) return;
+
+            // Use cached groups if available
+            if (cachedGroups.length === 0) {
+                try {
+                    const response = await fetch('/api/groups');
+                    const data = await response.json();
+                    cachedGroups = data.groups || [];
+                } catch (error) { return; }
+            }
+
+            select.innerHTML = '<option value="">No group</option>' +
+                cachedGroups.map(g => '<option value="' + g.id + '"' + (g.id === currentGroupId ? ' selected' : '') + '>' + g.name + '</option>').join('');
+        }
+
+        async function setDeviceGroup(mac, groupId) {
+            try {
+                await fetch('/api/device/' + encodeURIComponent(mac) + '/group', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ group_id: groupId ? parseInt(groupId) : null })
+                });
+                refreshDevices();
+            } catch (error) { console.error('Error setting group:', error); }
         }
 
         async function loadDwellStats(mac) {
@@ -1232,6 +1297,7 @@ HTML_TEMPLATE = """
             }
         });
 
+        updateViewToggle();
         refreshDevices();
         setInterval(refreshDevices, 10000);
     </script>
@@ -1398,6 +1464,19 @@ SETTINGS_TEMPLATE = """
         </form>
 
         <div class="panel" style="margin-top: 2rem;">
+            <div class="panel-header">Device Groups</div>
+            <div class="panel-body">
+                <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">Organize targets into custom groups for easier tracking</p>
+                <div id="groups-list" style="margin-bottom: 1rem;"></div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input type="text" class="form-input" id="new-group-name" placeholder="New group name" style="flex: 1;">
+                    <input type="color" id="new-group-color" value="#3b82f6" style="width: 40px; height: 38px; border: 1px solid var(--border-color); background: var(--bg-tertiary); cursor: pointer;">
+                    <button type="button" class="btn btn-primary" onclick="createGroup()">Add Group</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel" style="margin-top: 2rem;">
             <div class="panel-header">Access Control</div>
             <div class="panel-body">
                 <label class="form-check">
@@ -1516,9 +1595,57 @@ SETTINGS_TEMPLATE = """
             } catch (error) { console.error('Logout error'); }
         }
 
+        async function loadGroups() {
+            try {
+                const response = await fetch('/api/groups');
+                const data = await response.json();
+                const container = document.getElementById('groups-list');
+                if (!data.groups || data.groups.length === 0) {
+                    container.innerHTML = '<div style="color: var(--text-muted); font-size: 0.75rem; text-align: center; padding: 1rem;">No groups created yet</div>';
+                    return;
+                }
+                container.innerHTML = data.groups.map(g => '<div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem; background: var(--bg-tertiary); border-radius: 3px; margin-bottom: 0.5rem;">' +
+                    '<div style="width: 12px; height: 12px; background: ' + g.color + '; border-radius: 2px;"></div>' +
+                    '<span style="flex: 1; font-size: 0.85rem;">' + g.name + '</span>' +
+                    '<button class="btn" style="padding: 0.25rem 0.5rem; font-size: 0.7rem;" onclick="deleteGroup(' + g.id + ')">Delete</button>' +
+                '</div>').join('');
+            } catch (error) { console.error('Error loading groups'); }
+        }
+
+        async function createGroup() {
+            const name = document.getElementById('new-group-name').value.trim();
+            const color = document.getElementById('new-group-color').value;
+            if (!name) { showStatus('Group name required', 'error'); return; }
+
+            try {
+                const response = await fetch('/api/groups', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, color, icon: '📁' })
+                });
+                if (response.ok) {
+                    document.getElementById('new-group-name').value = '';
+                    loadGroups();
+                    showStatus('Group created', 'success');
+                } else {
+                    showStatus('Error creating group', 'error');
+                }
+            } catch (error) { showStatus('Error creating group', 'error'); }
+        }
+
+        async function deleteGroup(id) {
+            if (!confirm('Delete this group?')) return;
+            try {
+                const response = await fetch('/api/groups/' + id, { method: 'DELETE' });
+                if (response.ok) { loadGroups(); showStatus('Group deleted', 'success'); }
+                else { showStatus('Error deleting group', 'error'); }
+            } catch (error) { showStatus('Error deleting group', 'error'); }
+        }
+
         document.getElementById('settings-form').addEventListener('submit', saveSettings);
         loadSettings();
         loadAuthStatus();
+        loadGroups();
     </script>
 </body>
 </html>
@@ -1989,6 +2116,7 @@ class WebServer:
                 "total_sightings": device.total_sightings,
                 "service_uuids": device.service_uuids,
                 "notes": device.notes,
+                "group_id": device.group_id,
             },
             "type_label": get_type_label(device_type),
             "uuid_names": get_uuid_names(device.service_uuids),
