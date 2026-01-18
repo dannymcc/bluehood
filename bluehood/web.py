@@ -15,6 +15,12 @@ from .patterns import generate_hourly_heatmap, generate_daily_heatmap
 
 logger = logging.getLogger(__name__)
 
+# Import for type hints (will be None at runtime if not used)
+try:
+    from .notifications import NotificationManager
+except ImportError:
+    NotificationManager = None
+
 # HTML Template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -514,6 +520,36 @@ HTML_TEMPLATE = """
             margin-top: 0.25rem;
         }
 
+        /* RSSI Chart */
+        .rssi-chart {
+            position: relative;
+            height: 80px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 0.5rem;
+            overflow: hidden;
+        }
+
+        .rssi-chart svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .rssi-line {
+            fill: none;
+            stroke: var(--accent-cyan);
+            stroke-width: 2;
+        }
+
+        .rssi-area {
+            fill: url(#rssiGradient);
+        }
+
+        .rssi-label {
+            font-size: 0.65rem;
+            fill: var(--text-muted);
+        }
+
         /* Footer */
         .footer {
             text-align: center;
@@ -634,16 +670,18 @@ HTML_TEMPLATE = """
     </main>
 
     <footer class="footer">
-        <p>Bluehood v0.2.0 - Bluetooth Neighborhood</p>
+        <p>Bluehood v0.3.0 - Bluetooth Neighborhood</p>
         <p>
             <a href="https://github.com/dannymcc/bluehood">GitHub</a>
+            <span style="margin: 0 0.5rem;">|</span>
+            <a href="#" onclick="showSettings(); return false;">Settings</a>
             <span style="margin: 0 0.5rem;">|</span>
             <a href="#" onclick="showAbout(); return false;">About</a>
         </p>
     </footer>
 
     <!-- About Modal -->
-    <div class="modal-overlay" id="about-modal" style="display: none;">
+    <div class="modal-overlay" id="about-modal">
         <div class="modal" style="max-width: 600px;">
             <div class="modal-header">
                 <div class="modal-title">About Bluehood</div>
@@ -667,6 +705,71 @@ HTML_TEMPLATE = """
                 <p style="color: var(--text-muted); font-size: 0.9rem;">
                     Bluehood is an educational tool to raise awareness about Bluetooth privacy.
                 </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settings-modal">
+        <div class="modal" style="max-width: 550px;">
+            <div class="modal-header">
+                <div class="modal-title">Settings</div>
+                <button class="modal-close" onclick="closeSettings()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom: 1.5rem;">
+                    <h3 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Push Notifications (ntfy.sh)</h3>
+
+                    <div class="detail-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
+                        <label style="font-size: 0.85rem;">ntfy.sh Topic</label>
+                        <input type="text" id="settings-ntfy-topic" class="search-input" style="width: 100%;"
+                            placeholder="your-topic-name (e.g., bluehood-alerts)">
+                        <span style="font-size: 0.75rem; color: var(--text-muted);">
+                            Create a topic at <a href="https://ntfy.sh" target="_blank">ntfy.sh</a> and enter it here
+                        </span>
+                    </div>
+
+                    <div class="detail-row" style="justify-content: flex-start; gap: 1rem; padding: 0.5rem 0;">
+                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                            <input type="checkbox" id="settings-ntfy-enabled"> Enable notifications
+                        </label>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 1.5rem;">
+                    <h3 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Notification Triggers</h3>
+
+                    <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                            <input type="checkbox" id="settings-notify-new"> New device detected
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                            <input type="checkbox" id="settings-notify-return"> Watched device returns
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                            <input type="checkbox" id="settings-notify-leave"> Watched device leaves
+                        </label>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 1.5rem;">
+                    <h3 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Thresholds</h3>
+
+                    <div class="detail-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
+                        <label style="font-size: 0.85rem;">Absence threshold (minutes before "left")</label>
+                        <input type="number" id="settings-absence-minutes" class="search-input" style="width: 100px;" value="30" min="1">
+                    </div>
+
+                    <div class="detail-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
+                        <label style="font-size: 0.85rem;">Return threshold (minutes absent before "returned")</label>
+                        <input type="number" id="settings-return-minutes" class="search-input" style="width: 100px;" value="5" min="1">
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                    <button class="btn" onclick="closeSettings()">Cancel</button>
+                    <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+                </div>
             </div>
         </div>
     </div>
@@ -925,7 +1028,17 @@ HTML_TEMPLATE = """
                     <div class="heatmap-title">Presence Timeline (30 days)</div>
                     ${renderTimeline(data.timeline)}
                 </div>
+
+                <div class="heatmap-section" id="rssi-section">
+                    <div class="heatmap-title">Signal Strength History (7 days)</div>
+                    <div class="rssi-chart" id="rssi-chart">
+                        <div style="color: var(--text-muted); font-size: 0.8rem; text-align: center; padding-top: 1.5rem;">Loading...</div>
+                    </div>
+                </div>
             `;
+
+            // Load RSSI history after rendering
+            loadRssiChart(d.mac);
         }
 
         function renderTimeline(timeline) {
@@ -951,6 +1064,78 @@ HTML_TEMPLATE = """
                    '<span>' + formatDate(firstDate) + '</span>' +
                    '<span>' + formatDate(lastDate) + '</span>' +
                    '</div>';
+        }
+
+        async function loadRssiChart(mac) {
+            const container = document.getElementById('rssi-chart');
+            if (!container) return;
+
+            try {
+                const response = await fetch('/api/device/' + encodeURIComponent(mac) + '/rssi?days=7');
+                const data = await response.json();
+
+                if (!data.rssi_history || data.rssi_history.length < 2) {
+                    container.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8rem; text-align: center; padding-top: 1.5rem;">Insufficient data</div>';
+                    return;
+                }
+
+                renderRssiChart(container, data.rssi_history);
+            } catch (error) {
+                console.error('Error loading RSSI history:', error);
+                container.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8rem; text-align: center; padding-top: 1.5rem;">Error loading data</div>';
+            }
+        }
+
+        function renderRssiChart(container, rssiData) {
+            const width = container.clientWidth - 20;
+            const height = 60;
+            const padding = { left: 30, right: 10, top: 5, bottom: 15 };
+
+            // Get min/max RSSI values
+            const rssiValues = rssiData.map(d => d.rssi);
+            const minRssi = Math.min(...rssiValues);
+            const maxRssi = Math.max(...rssiValues);
+
+            // Scale functions
+            const xScale = (i) => padding.left + (i / (rssiData.length - 1)) * (width - padding.left - padding.right);
+            const yScale = (rssi) => {
+                const range = maxRssi - minRssi || 1;
+                return padding.top + (1 - (rssi - minRssi) / range) * (height - padding.top - padding.bottom);
+            };
+
+            // Build SVG path
+            const linePath = rssiData.map((d, i) => {
+                const x = xScale(i);
+                const y = yScale(d.rssi);
+                return (i === 0 ? 'M' : 'L') + x + ',' + y;
+            }).join(' ');
+
+            // Area path (for gradient fill)
+            const areaPath = linePath +
+                ' L' + xScale(rssiData.length - 1) + ',' + (height - padding.bottom) +
+                ' L' + padding.left + ',' + (height - padding.bottom) + ' Z';
+
+            // Time labels
+            const firstTime = new Date(rssiData[0].timestamp);
+            const lastTime = new Date(rssiData[rssiData.length - 1].timestamp);
+            const formatTime = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+            container.innerHTML = \`
+                <svg viewBox="0 0 \${width} \${height}" preserveAspectRatio="none">
+                    <defs>
+                        <linearGradient id="rssiGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                            <stop offset="0%" style="stop-color: var(--accent-cyan); stop-opacity: 0.3"/>
+                            <stop offset="100%" style="stop-color: var(--accent-cyan); stop-opacity: 0.05"/>
+                        </linearGradient>
+                    </defs>
+                    <path class="rssi-area" d="\${areaPath}"/>
+                    <path class="rssi-line" d="\${linePath}"/>
+                    <text class="rssi-label" x="\${padding.left}" y="\${height - 2}">\${formatTime(firstTime)}</text>
+                    <text class="rssi-label" x="\${width - padding.right}" y="\${height - 2}" text-anchor="end">\${formatTime(lastTime)}</text>
+                    <text class="rssi-label" x="2" y="\${padding.top + 8}">\${maxRssi}dBm</text>
+                    <text class="rssi-label" x="2" y="\${height - padding.bottom - 2}">\${minRssi}dBm</text>
+                </svg>
+            \`;
         }
 
         async function toggleWatch(mac) {
@@ -986,11 +1171,65 @@ HTML_TEMPLATE = """
         }
 
         function showAbout() {
-            document.getElementById('about-modal').style.display = 'flex';
+            document.getElementById('about-modal').classList.add('active');
         }
 
         function closeAbout() {
-            document.getElementById('about-modal').style.display = 'none';
+            document.getElementById('about-modal').classList.remove('active');
+        }
+
+        async function showSettings() {
+            // Load current settings
+            try {
+                const response = await fetch('/api/settings');
+                const settings = await response.json();
+
+                document.getElementById('settings-ntfy-topic').value = settings.ntfy_topic || '';
+                document.getElementById('settings-ntfy-enabled').checked = settings.ntfy_enabled;
+                document.getElementById('settings-notify-new').checked = settings.notify_new_device;
+                document.getElementById('settings-notify-return').checked = settings.notify_watched_return;
+                document.getElementById('settings-notify-leave').checked = settings.notify_watched_leave;
+                document.getElementById('settings-absence-minutes').value = settings.watched_absence_minutes;
+                document.getElementById('settings-return-minutes').value = settings.watched_return_minutes;
+            } catch (error) {
+                console.error('Error loading settings:', error);
+            }
+
+            document.getElementById('settings-modal').classList.add('active');
+        }
+
+        function closeSettings() {
+            document.getElementById('settings-modal').classList.remove('active');
+        }
+
+        async function saveSettings() {
+            const settings = {
+                ntfy_topic: document.getElementById('settings-ntfy-topic').value,
+                ntfy_enabled: document.getElementById('settings-ntfy-enabled').checked,
+                notify_new_device: document.getElementById('settings-notify-new').checked,
+                notify_watched_return: document.getElementById('settings-notify-return').checked,
+                notify_watched_leave: document.getElementById('settings-notify-leave').checked,
+                watched_absence_minutes: parseInt(document.getElementById('settings-absence-minutes').value) || 30,
+                watched_return_minutes: parseInt(document.getElementById('settings-return-minutes').value) || 5,
+            };
+
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings),
+                });
+
+                if (response.ok) {
+                    closeSettings();
+                } else {
+                    const error = await response.json();
+                    alert('Error saving settings: ' + (error.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error saving settings:', error);
+                alert('Error saving settings');
+            }
         }
 
         function exportData() {
@@ -1024,6 +1263,12 @@ HTML_TEMPLATE = """
         document.getElementById('device-modal').addEventListener('click', (e) => {
             if (e.target.id === 'device-modal') closeModal();
         });
+        document.getElementById('about-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'about-modal') closeAbout();
+        });
+        document.getElementById('settings-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'settings-modal') closeSettings();
+        });
 
         // Initial load and auto-refresh
         refreshDevices();
@@ -1037,10 +1282,11 @@ HTML_TEMPLATE = """
 class WebServer:
     """Web server for Bluehood dashboard."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8080):
+    def __init__(self, host: str = "0.0.0.0", port: int = 8080, notifications=None):
         self.host = host
         self.port = port
         self.app = web.Application()
+        self._notifications = notifications
         self._setup_routes()
 
     def _setup_routes(self):
@@ -1048,8 +1294,19 @@ class WebServer:
         self.app.router.add_get("/api/devices", self.api_devices)
         self.app.router.add_get("/api/device/{mac}", self.api_device)
         self.app.router.add_post("/api/device/{mac}/watch", self.api_toggle_watch)
+        self.app.router.add_post("/api/device/{mac}/group", self.api_set_device_group)
+        self.app.router.add_post("/api/device/{mac}/name", self.api_set_device_name)
+        self.app.router.add_get("/api/device/{mac}/rssi", self.api_device_rssi)
         self.app.router.add_get("/api/search", self.api_search)
         self.app.router.add_get("/api/stats", self.api_stats)
+        # Settings
+        self.app.router.add_get("/api/settings", self.api_get_settings)
+        self.app.router.add_post("/api/settings", self.api_update_settings)
+        # Groups
+        self.app.router.add_get("/api/groups", self.api_get_groups)
+        self.app.router.add_post("/api/groups", self.api_create_group)
+        self.app.router.add_put("/api/groups/{group_id}", self.api_update_group)
+        self.app.router.add_delete("/api/groups/{group_id}", self.api_delete_group)
 
     async def index(self, request: web.Request) -> web.Response:
         """Serve the main dashboard."""
@@ -1175,10 +1432,54 @@ class WebServer:
         new_status = not device.watched
         await db.set_watched(mac, new_status)
 
+        # Update notifications manager state
+        if self._notifications:
+            self._notifications.update_watched_state(mac, new_status)
+
         return web.json_response({
             "mac": mac,
             "watched": new_status,
         })
+
+    async def api_set_device_group(self, request: web.Request) -> web.Response:
+        """Set the group for a device."""
+        mac = request.match_info["mac"]
+        device = await db.get_device(mac)
+
+        if not device:
+            return web.json_response({"error": "Device not found"}, status=404)
+
+        try:
+            data = await request.json()
+            group_id = data.get("group_id")  # Can be None to remove from group
+            await db.set_device_group(mac, group_id)
+            return web.json_response({"mac": mac, "group_id": group_id})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    async def api_set_device_name(self, request: web.Request) -> web.Response:
+        """Set the friendly name for a device."""
+        mac = request.match_info["mac"]
+        device = await db.get_device(mac)
+
+        if not device:
+            return web.json_response({"error": "Device not found"}, status=404)
+
+        try:
+            data = await request.json()
+            name = data.get("name", "")
+            await db.set_friendly_name(mac, name)
+            return web.json_response({"mac": mac, "friendly_name": name})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    async def api_device_rssi(self, request: web.Request) -> web.Response:
+        """Get RSSI history for a device."""
+        mac = request.match_info["mac"]
+        days = int(request.query.get("days", "7"))
+
+        rssi_history = await db.get_rssi_history(mac, days)
+        return web.json_response({"mac": mac, "rssi_history": rssi_history})
 
     def _analyze_pattern(self, hourly: dict, daily: dict, sighting_count: int) -> str:
         """Simple pattern analysis from hourly/daily data."""
@@ -1284,6 +1585,107 @@ class WebServer:
             "active_today": sum(1 for d in devices if d.last_seen and d.last_seen.date() == today),
             "total_sightings": sum(d.total_sightings for d in devices),
         })
+
+    # ========================================================================
+    # Settings API
+    # ========================================================================
+
+    async def api_get_settings(self, request: web.Request) -> web.Response:
+        """Get all settings."""
+        settings = await db.get_settings()
+        return web.json_response({
+            "ntfy_topic": settings.ntfy_topic or "",
+            "ntfy_enabled": settings.ntfy_enabled,
+            "notify_new_device": settings.notify_new_device,
+            "notify_watched_return": settings.notify_watched_return,
+            "notify_watched_leave": settings.notify_watched_leave,
+            "watched_absence_minutes": settings.watched_absence_minutes,
+            "watched_return_minutes": settings.watched_return_minutes,
+        })
+
+    async def api_update_settings(self, request: web.Request) -> web.Response:
+        """Update settings."""
+        try:
+            data = await request.json()
+            settings = db.Settings(
+                ntfy_topic=data.get("ntfy_topic"),
+                ntfy_enabled=data.get("ntfy_enabled", False),
+                notify_new_device=data.get("notify_new_device", False),
+                notify_watched_return=data.get("notify_watched_return", True),
+                notify_watched_leave=data.get("notify_watched_leave", True),
+                watched_absence_minutes=int(data.get("watched_absence_minutes", 30)),
+                watched_return_minutes=int(data.get("watched_return_minutes", 5)),
+            )
+            await db.update_settings(settings)
+
+            # Reload settings in notification manager
+            if self._notifications:
+                await self._notifications.reload_settings()
+
+            return web.json_response({"status": "ok"})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    # ========================================================================
+    # Groups API
+    # ========================================================================
+
+    async def api_get_groups(self, request: web.Request) -> web.Response:
+        """Get all device groups."""
+        groups = await db.get_groups()
+        return web.json_response({
+            "groups": [
+                {"id": g.id, "name": g.name, "color": g.color, "icon": g.icon}
+                for g in groups
+            ]
+        })
+
+    async def api_create_group(self, request: web.Request) -> web.Response:
+        """Create a new device group."""
+        try:
+            data = await request.json()
+            name = data.get("name")
+            if not name:
+                return web.json_response({"error": "Name is required"}, status=400)
+
+            group = await db.create_group(
+                name=name,
+                color=data.get("color", "#3b82f6"),
+                icon=data.get("icon", "📁"),
+            )
+            return web.json_response({
+                "id": group.id,
+                "name": group.name,
+                "color": group.color,
+                "icon": group.icon,
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    async def api_update_group(self, request: web.Request) -> web.Response:
+        """Update a device group."""
+        try:
+            group_id = int(request.match_info["group_id"])
+            data = await request.json()
+
+            await db.update_group(
+                group_id=group_id,
+                name=data.get("name", ""),
+                color=data.get("color", "#3b82f6"),
+                icon=data.get("icon", "📁"),
+            )
+            return web.json_response({"status": "ok"})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    async def api_delete_group(self, request: web.Request) -> web.Response:
+        """Delete a device group."""
+        try:
+            group_id = int(request.match_info["group_id"])
+            await db.delete_group(group_id)
+            return web.json_response({"status": "ok"})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
 
     async def start(self) -> web.AppRunner:
         """Start the web server."""

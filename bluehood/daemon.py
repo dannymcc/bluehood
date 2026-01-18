@@ -14,6 +14,7 @@ from . import db
 from .config import SCAN_INTERVAL, SOCKET_PATH
 from .scanner import BluetoothScanner, ScannedDevice, list_adapters
 from .web import WebServer
+from .notifications import NotificationManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +34,7 @@ class BluehoodDaemon:
         self._server: asyncio.Server | None = None
         self._web_port = web_port
         self._web_server: WebServer | None = None
+        self._notifications = NotificationManager()
 
     async def start(self) -> None:
         """Start the daemon."""
@@ -41,6 +43,9 @@ class BluehoodDaemon:
         # Initialize database
         await db.init_db()
         logger.info(f"Database initialized at {db.DB_PATH}")
+
+        # Initialize notifications
+        await self._notifications.start()
 
         # Setup signal handlers
         loop = asyncio.get_event_loop()
@@ -52,12 +57,13 @@ class BluehoodDaemon:
 
         # Start web server if port specified
         if self._web_port:
-            self._web_server = WebServer(port=self._web_port)
+            self._web_server = WebServer(port=self._web_port, notifications=self._notifications)
             await self._web_server.start()
             logger.info(f"Web dashboard available at http://0.0.0.0:{self._web_port}")
 
-        # Start scanning
+        # Start scanning and absence checking
         self.running = True
+        asyncio.create_task(self._absence_check_loop())
         await self._scan_loop()
 
     async def stop(self) -> None:
@@ -78,6 +84,9 @@ class BluehoodDaemon:
         # Stop web server
         if self._web_server:
             await self._web_server.stop()
+
+        # Stop notifications
+        await self._notifications.stop()
 
         # Remove socket file
         if SOCKET_PATH.exists():
@@ -264,12 +273,17 @@ class BluehoodDaemon:
                 devices = await self.scanner.scan()
 
                 for device in devices:
-                    await db.upsert_device(
+                    db_device, is_new = await db.upsert_device(
                         mac=device.mac,
                         vendor=device.vendor,
                         rssi=device.rssi,
                         service_uuids=device.service_uuids,
+                        bt_type=device.bt_type,
+                        device_class=device.device_class,
                     )
+
+                    # Trigger notification checks
+                    await self._notifications.on_device_seen(db_device, is_new)
 
                 # Notify connected clients
                 await self._notify_clients({
@@ -281,6 +295,15 @@ class BluehoodDaemon:
                 logger.error(f"Scan error: {e}")
 
             await asyncio.sleep(SCAN_INTERVAL)
+
+    async def _absence_check_loop(self) -> None:
+        """Periodically check for absent watched devices."""
+        while self.running:
+            try:
+                await self._notifications.check_absent_devices()
+            except Exception as e:
+                logger.error(f"Absence check error: {e}")
+            await asyncio.sleep(60)  # Check every minute
 
     async def _notify_clients(self, event: dict) -> None:
         """Send an event to all connected clients."""

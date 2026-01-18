@@ -1,9 +1,10 @@
-"""Bluetooth scanning module using bleak."""
+"""Bluetooth scanning module using bleak (BLE) and hcitool (classic)."""
 
 import asyncio
 import logging
+import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import aiohttp
@@ -25,6 +26,37 @@ from .config import SCAN_DURATION, BLUETOOTH_ADAPTER
 logger = logging.getLogger(__name__)
 
 
+# Bluetooth device class codes for classification
+# See: https://www.bluetooth.com/specifications/assigned-numbers/baseband/
+BT_CLASS_MAJOR = {
+    0x01: "computer",
+    0x02: "phone",
+    0x03: "network",  # LAN/Network Access Point
+    0x04: "audio",    # Audio/Video
+    0x05: "peripheral",  # Keyboard, mouse, etc.
+    0x06: "imaging",  # Printer, scanner, camera
+    0x07: "wearable",
+    0x08: "toy",
+    0x09: "health",
+}
+
+BT_CLASS_MINOR_AUDIO = {
+    0x01: "headset",
+    0x02: "handsfree",
+    0x04: "microphone",
+    0x05: "speaker",
+    0x06: "headphones",
+    0x07: "portable_audio",
+    0x08: "car_audio",
+}
+
+BT_CLASS_MINOR_PHONE = {
+    0x01: "cellular",
+    0x02: "cordless",
+    0x03: "smartphone",
+}
+
+
 @dataclass
 class BluetoothAdapter:
     """Represents a Bluetooth adapter."""
@@ -41,10 +73,33 @@ class ScannedDevice:
     rssi: int
     vendor: Optional[str] = None
     service_uuids: list[str] = None  # BLE service UUIDs for fingerprinting
+    bt_type: str = "ble"  # "ble" or "classic"
+    device_class: Optional[int] = None  # Classic Bluetooth device class
 
     def __post_init__(self):
         if self.service_uuids is None:
             self.service_uuids = []
+
+
+def parse_device_class(device_class: int) -> tuple[str, Optional[str]]:
+    """Parse Bluetooth device class into major and minor categories."""
+    if device_class is None:
+        return "unknown", None
+
+    # Major device class is bits 8-12
+    major = (device_class >> 8) & 0x1F
+    # Minor device class is bits 2-7
+    minor = (device_class >> 2) & 0x3F
+
+    major_type = BT_CLASS_MAJOR.get(major, "unknown")
+
+    minor_type = None
+    if major == 0x04:  # Audio
+        minor_type = BT_CLASS_MINOR_AUDIO.get(minor)
+    elif major == 0x02:  # Phone
+        minor_type = BT_CLASS_MINOR_PHONE.get(minor)
+
+    return major_type, minor_type
 
 
 def list_adapters() -> list[BluetoothAdapter]:
@@ -187,8 +242,8 @@ class BluetoothScanner:
             logger.debug(f"Vendor API error for {oui}: {e}")
             return None
 
-    async def scan(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
-        """Perform a Bluetooth scan and return discovered devices."""
+    async def scan_ble(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
+        """Perform a Bluetooth LE scan."""
         devices: list[ScannedDevice] = []
 
         try:
@@ -215,12 +270,133 @@ class BluetoothScanner:
                     rssi=adv_data.rssi,
                     vendor=vendor,
                     service_uuids=service_uuids,
+                    bt_type="ble",
                 ))
 
-            logger.info(f"Scan complete: found {len(devices)} devices")
+            logger.debug(f"BLE scan: found {len(devices)} devices")
 
         except Exception as e:
-            logger.error(f"Scan error: {e}")
+            logger.error(f"BLE scan error: {e}")
+
+        return devices
+
+    async def scan_classic(self, duration: int = 8) -> list[ScannedDevice]:
+        """Perform a classic Bluetooth inquiry scan using hcitool.
+
+        Duration is in 1.28 second units (8 = ~10 seconds).
+        """
+        devices: list[ScannedDevice] = []
+
+        try:
+            # Use hcitool for classic Bluetooth inquiry
+            adapter_arg = ["-i", self.adapter] if self.adapter else []
+
+            # Run inquiry scan
+            proc = await asyncio.create_subprocess_exec(
+                "hcitool", *adapter_arg, "inq", "--length", str(duration),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=duration * 1.28 + 5  # Wait for scan + buffer
+            )
+
+            if proc.returncode != 0:
+                error_msg = stderr.decode().strip() if stderr else "Unknown error"
+                # Don't log error if it's just "Device not configured" - adapter might not support inquiry
+                if "not configured" not in error_msg.lower():
+                    logger.debug(f"Classic scan unavailable: {error_msg}")
+                return devices
+
+            # Parse hcitool output
+            # Format: "	XX:XX:XX:XX:XX:XX	clock offset: 0x1234	class: 0x123456"
+            output = stdout.decode()
+            for line in output.strip().split("\n"):
+                if not line.strip() or line.startswith("Inquiring"):
+                    continue
+
+                # Parse MAC address and device class
+                match = re.search(
+                    r'([0-9A-Fa-f:]{17})\s+clock offset:.*class:\s*0x([0-9A-Fa-f]+)',
+                    line
+                )
+                if match:
+                    mac = match.group(1).upper()
+                    device_class = int(match.group(2), 16)
+
+                    # Try to get device name (separate call)
+                    name = await self._get_classic_device_name(mac, adapter_arg)
+                    vendor = await self._get_vendor(mac)
+
+                    devices.append(ScannedDevice(
+                        mac=mac,
+                        name=name,
+                        rssi=-60,  # hcitool doesn't provide RSSI, use placeholder
+                        vendor=vendor,
+                        service_uuids=[],
+                        bt_type="classic",
+                        device_class=device_class,
+                    ))
+
+            logger.debug(f"Classic scan: found {len(devices)} devices")
+
+        except asyncio.TimeoutError:
+            logger.debug("Classic scan timed out")
+        except FileNotFoundError:
+            logger.debug("hcitool not found - classic Bluetooth scanning unavailable")
+        except Exception as e:
+            logger.debug(f"Classic scan error: {e}")
+
+        return devices
+
+    async def _get_classic_device_name(
+        self, mac: str, adapter_arg: list[str]
+    ) -> Optional[str]:
+        """Get the friendly name of a classic Bluetooth device."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "hcitool", *adapter_arg, "name", mac,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            name = stdout.decode().strip()
+            return name if name else None
+        except Exception:
+            return None
+
+    async def scan(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
+        """Perform both BLE and classic Bluetooth scans."""
+        # Run both scans concurrently
+        ble_task = asyncio.create_task(self.scan_ble(duration))
+        classic_task = asyncio.create_task(self.scan_classic())
+
+        ble_devices, classic_devices = await asyncio.gather(
+            ble_task, classic_task, return_exceptions=True
+        )
+
+        # Handle any exceptions
+        if isinstance(ble_devices, Exception):
+            logger.error(f"BLE scan failed: {ble_devices}")
+            ble_devices = []
+        if isinstance(classic_devices, Exception):
+            logger.debug(f"Classic scan failed: {classic_devices}")
+            classic_devices = []
+
+        # Merge results, preferring BLE data if device seen in both
+        seen_macs = set()
+        devices = []
+
+        for device in ble_devices:
+            seen_macs.add(device.mac.upper())
+            devices.append(device)
+
+        for device in classic_devices:
+            if device.mac.upper() not in seen_macs:
+                devices.append(device)
+
+        logger.info(f"Scan complete: {len(ble_devices)} BLE + {len(classic_devices)} classic = {len(devices)} unique devices")
 
         return devices
 

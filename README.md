@@ -29,31 +29,45 @@ This metadata can reveal surprisingly personal information without any active in
 
 ## What?
 
-Bluehood is a Bluetooth Low Energy (BLE) scanner that:
+Bluehood is a Bluetooth scanner that:
 
-- **Continuously scans** for nearby BLE devices
+- **Continuously scans** for nearby Bluetooth devices (both BLE and Classic)
 - **Identifies devices** by vendor (MAC address lookup) and BLE service UUIDs
 - **Classifies devices** into categories (phones, audio, wearables, IoT, vehicles, etc.)
 - **Tracks presence patterns** over time with hourly/daily heatmaps
 - **Filters out noise** from randomized MAC addresses (privacy-rotated devices)
+- **Sends push notifications** when watched devices arrive or leave
 - **Provides a web dashboard** for monitoring and analysis
 
 ## Features
 
-- Continuous Bluetooth LE scanning
-- Web dashboard for real-time monitoring
+### Scanning
+- Dual-mode scanning: Bluetooth Low Energy (BLE) and Classic Bluetooth
 - MAC address vendor lookup (local database + online API fallback)
 - BLE service UUID fingerprinting for accurate device classification
+- Classic Bluetooth device class parsing
+- Randomized MAC filtering (hidden from main view)
+
+### Device Management
+- Mark devices as "Watched" for tracking personal devices
+- Organize devices into custom groups
+- Set friendly names for known devices
 - Device type detection (phones, audio, wearables, IoT, vehicles, etc.)
+
+### Analytics
 - 30-day presence timeline visualization
+- Signal strength (RSSI) history chart
 - Hourly and daily activity heatmaps
 - Pattern analysis ("Weekdays, evenings 5PM-9PM")
-- Mark devices as "Watched" for tracking personal devices
-- Ignore unwanted devices
-- Set friendly names for known devices
 - Search by MAC, vendor, or name
 - Date range search for historical queries
-- Randomized MAC filtering (hidden from main view)
+
+### Notifications (via ntfy.sh)
+- Push notifications to your phone/desktop
+- Notify when new devices are detected
+- Notify when watched devices return
+- Notify when watched devices leave
+- Configurable thresholds for arrival/departure
 
 ## How?
 
@@ -152,12 +166,25 @@ The dashboard provides:
 - **Device filters** by type (phones, audio, IoT, etc.) and watched status
 - **Search** by MAC, vendor, or name
 - **Date range search** to find devices seen in a specific time window
+- **Settings** for configuring notifications and groups
 - **Device details** modal with:
   - BLE service fingerprints
   - Hourly/daily activity heatmaps
   - 30-day presence timeline
-  - Signal strength (RSSI)
+  - Signal strength (RSSI) history chart
   - Pattern analysis
+
+## Push Notifications
+
+Bluehood can send push notifications via [ntfy.sh](https://ntfy.sh), a free, open-source notification service.
+
+1. Create a topic at ntfy.sh (e.g., `bluehood-myname-alerts`)
+2. Subscribe to the topic on your phone using the ntfy app
+3. In Bluehood settings, enter your topic name and enable notifications
+4. Configure which events trigger notifications:
+   - New device detected
+   - Watched device returns (after being absent)
+   - Watched device leaves (not seen for X minutes)
 
 ## Data Storage
 

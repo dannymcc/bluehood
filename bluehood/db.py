@@ -22,6 +22,9 @@ class Device:
     last_seen: Optional[datetime] = None
     total_sightings: int = 0
     service_uuids: list[str] = None  # BLE service UUIDs for fingerprinting
+    bt_type: str = "ble"  # "ble" or "classic"
+    device_class: Optional[int] = None  # Classic BT device class
+    group_id: Optional[int] = None  # Device group
 
     def __post_init__(self):
         if self.service_uuids is None:
@@ -35,6 +38,28 @@ class Sighting:
     mac: str
     timestamp: datetime
     rssi: Optional[int] = None
+
+
+@dataclass
+class DeviceGroup:
+    """Represents a device group/alias."""
+    id: int
+    name: str
+    color: str = "#3b82f6"  # Default blue
+    icon: str = "📁"
+
+
+@dataclass
+class Settings:
+    """Application settings."""
+    # Notification settings
+    ntfy_topic: Optional[str] = None
+    ntfy_enabled: bool = False
+    notify_new_device: bool = False
+    notify_watched_return: bool = True
+    notify_watched_leave: bool = True
+    watched_absence_minutes: int = 30  # Minutes before "left"
+    watched_return_minutes: int = 5    # Minutes of absence before "return" triggers
 
 
 SCHEMA = """
@@ -57,6 +82,18 @@ CREATE TABLE IF NOT EXISTS sightings (
     FOREIGN KEY (mac) REFERENCES devices(mac)
 );
 
+CREATE TABLE IF NOT EXISTS device_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    color TEXT DEFAULT '#3b82f6',
+    icon TEXT DEFAULT '📁'
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_sightings_mac_time ON sightings(mac, timestamp);
 CREATE INDEX IF NOT EXISTS idx_sightings_timestamp ON sightings(timestamp);
 """
@@ -66,25 +103,54 @@ async def init_db() -> None:
     """Initialize the database schema."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(SCHEMA)
-        # Migration: add device_type column if missing
-        try:
-            await db.execute("ALTER TABLE devices ADD COLUMN device_type TEXT")
-            await db.commit()
-        except Exception:
-            pass  # Column already exists
-        # Migration: add watched column if missing
-        try:
-            await db.execute("ALTER TABLE devices ADD COLUMN watched INTEGER DEFAULT 0")
-            await db.commit()
-        except Exception:
-            pass  # Column already exists
-        # Migration: add service_uuids column if missing
-        try:
-            await db.execute("ALTER TABLE devices ADD COLUMN service_uuids TEXT")
-            await db.commit()
-        except Exception:
-            pass  # Column already exists
+
+        # Migrations for devices table columns
+        migrations = [
+            ("device_type", "TEXT"),
+            ("watched", "INTEGER DEFAULT 0"),
+            ("service_uuids", "TEXT"),
+            ("bt_type", "TEXT DEFAULT 'ble'"),
+            ("device_class", "INTEGER"),
+            ("group_id", "INTEGER REFERENCES device_groups(id)"),
+        ]
+
+        for column, column_type in migrations:
+            try:
+                await db.execute(f"ALTER TABLE devices ADD COLUMN {column} {column_type}")
+                await db.commit()
+            except Exception:
+                pass  # Column already exists
+
         await db.commit()
+
+
+def _parse_device_row(row) -> Device:
+    """Parse a database row into a Device object."""
+    keys = row.keys()
+
+    # Parse service_uuids from JSON
+    service_uuids = []
+    if "service_uuids" in keys and row["service_uuids"]:
+        try:
+            service_uuids = json.loads(row["service_uuids"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return Device(
+        mac=row["mac"],
+        vendor=row["vendor"],
+        friendly_name=row["friendly_name"],
+        device_type=row["device_type"] if "device_type" in keys else None,
+        ignored=bool(row["ignored"]),
+        watched=bool(row["watched"]) if "watched" in keys else False,
+        first_seen=datetime.fromisoformat(row["first_seen"]) if row["first_seen"] else None,
+        last_seen=datetime.fromisoformat(row["last_seen"]) if row["last_seen"] else None,
+        total_sightings=row["total_sightings"],
+        service_uuids=service_uuids,
+        bt_type=row["bt_type"] if "bt_type" in keys and row["bt_type"] else "ble",
+        device_class=row["device_class"] if "device_class" in keys else None,
+        group_id=row["group_id"] if "group_id" in keys else None,
+    )
 
 
 async def get_device(mac: str) -> Optional[Device]:
@@ -96,25 +162,7 @@ async def get_device(mac: str) -> Optional[Device]:
         ) as cursor:
             row = await cursor.fetchone()
             if row:
-                # Parse service_uuids from JSON
-                service_uuids = []
-                if "service_uuids" in row.keys() and row["service_uuids"]:
-                    try:
-                        service_uuids = json.loads(row["service_uuids"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                return Device(
-                    mac=row["mac"],
-                    vendor=row["vendor"],
-                    friendly_name=row["friendly_name"],
-                    device_type=row["device_type"] if "device_type" in row.keys() else None,
-                    ignored=bool(row["ignored"]),
-                    watched=bool(row["watched"]) if "watched" in row.keys() else False,
-                    first_seen=datetime.fromisoformat(row["first_seen"]) if row["first_seen"] else None,
-                    last_seen=datetime.fromisoformat(row["last_seen"]) if row["last_seen"] else None,
-                    total_sightings=row["total_sightings"],
-                    service_uuids=service_uuids,
-                )
+                return _parse_device_row(row)
             return None
 
 
@@ -129,37 +177,21 @@ async def get_all_devices(include_ignored: bool = True) -> list[Device]:
 
         async with db.execute(query) as cursor:
             rows = await cursor.fetchall()
-            devices = []
-            for row in rows:
-                # Parse service_uuids from JSON
-                service_uuids = []
-                if "service_uuids" in row.keys() and row["service_uuids"]:
-                    try:
-                        service_uuids = json.loads(row["service_uuids"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                devices.append(Device(
-                    mac=row["mac"],
-                    vendor=row["vendor"],
-                    friendly_name=row["friendly_name"],
-                    device_type=row["device_type"] if "device_type" in row.keys() else None,
-                    ignored=bool(row["ignored"]),
-                    watched=bool(row["watched"]) if "watched" in row.keys() else False,
-                    first_seen=datetime.fromisoformat(row["first_seen"]) if row["first_seen"] else None,
-                    last_seen=datetime.fromisoformat(row["last_seen"]) if row["last_seen"] else None,
-                    total_sightings=row["total_sightings"],
-                    service_uuids=service_uuids,
-                ))
-            return devices
+            return [_parse_device_row(row) for row in rows]
 
 
 async def upsert_device(
     mac: str,
     vendor: Optional[str] = None,
     rssi: Optional[int] = None,
-    service_uuids: Optional[list[str]] = None
-) -> Device:
-    """Insert or update a device and record a sighting."""
+    service_uuids: Optional[list[str]] = None,
+    bt_type: str = "ble",
+    device_class: Optional[int] = None,
+) -> tuple[Device, bool]:
+    """Insert or update a device and record a sighting.
+
+    Returns tuple of (device, is_new) where is_new indicates first sighting.
+    """
     now = datetime.now()
     uuids_json = json.dumps(service_uuids) if service_uuids else None
 
@@ -168,6 +200,8 @@ async def upsert_device(
         # Check if device exists
         async with db.execute("SELECT * FROM devices WHERE mac = ?", (mac,)) as cursor:
             existing = await cursor.fetchone()
+
+        is_new = existing is None
 
         if existing:
             # Build update based on what we have
@@ -192,6 +226,19 @@ async def upsert_device(
                 updates.append("service_uuids = ?")
                 params.append(json.dumps(merged))
 
+            # Update bt_type if we got classic BT info for a device we only had BLE for
+            if bt_type == "classic" and existing.get("bt_type") == "ble":
+                updates.append("bt_type = ?")
+                params.append("both")
+            elif bt_type == "ble" and existing.get("bt_type") == "classic":
+                updates.append("bt_type = ?")
+                params.append("both")
+
+            # Update device_class if we have it and didn't before
+            if device_class and not existing.get("device_class"):
+                updates.append("device_class = ?")
+                params.append(device_class)
+
             params.append(mac)
             await db.execute(
                 f"UPDATE devices SET {', '.join(updates)} WHERE mac = ?",
@@ -201,10 +248,10 @@ async def upsert_device(
             # Insert new device
             await db.execute(
                 """
-                INSERT INTO devices (mac, vendor, first_seen, last_seen, total_sightings, service_uuids)
-                VALUES (?, ?, ?, ?, 1, ?)
+                INSERT INTO devices (mac, vendor, first_seen, last_seen, total_sightings, service_uuids, bt_type, device_class)
+                VALUES (?, ?, ?, ?, 1, ?, ?, ?)
                 """,
-                (mac, vendor, now.isoformat(), now.isoformat(), uuids_json)
+                (mac, vendor, now.isoformat(), now.isoformat(), uuids_json, bt_type, device_class)
             )
 
         # Record sighting
@@ -215,7 +262,8 @@ async def upsert_device(
 
         await db.commit()
 
-    return await get_device(mac)
+    device = await get_device(mac)
+    return device, is_new
 
 
 async def set_friendly_name(mac: str, name: str) -> None:
@@ -429,5 +477,183 @@ async def search_devices(
                     "range_first": row["range_first"],
                     "range_last": row["range_last"],
                 }
+                for row in rows
+            ]
+
+
+# ============================================================================
+# Settings Management
+# ============================================================================
+
+async def get_settings() -> Settings:
+    """Get all application settings."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT key, value FROM settings") as cursor:
+            rows = await cursor.fetchall()
+            settings_dict = {row["key"]: row["value"] for row in rows}
+
+    return Settings(
+        ntfy_topic=settings_dict.get("ntfy_topic"),
+        ntfy_enabled=settings_dict.get("ntfy_enabled", "0") == "1",
+        notify_new_device=settings_dict.get("notify_new_device", "0") == "1",
+        notify_watched_return=settings_dict.get("notify_watched_return", "1") == "1",
+        notify_watched_leave=settings_dict.get("notify_watched_leave", "1") == "1",
+        watched_absence_minutes=int(settings_dict.get("watched_absence_minutes", "30")),
+        watched_return_minutes=int(settings_dict.get("watched_return_minutes", "5")),
+    )
+
+
+async def set_setting(key: str, value: str) -> None:
+    """Set a single setting value."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, value)
+        )
+        await db.commit()
+
+
+async def update_settings(settings: Settings) -> None:
+    """Update all settings from a Settings object."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        settings_pairs = [
+            ("ntfy_topic", settings.ntfy_topic or ""),
+            ("ntfy_enabled", "1" if settings.ntfy_enabled else "0"),
+            ("notify_new_device", "1" if settings.notify_new_device else "0"),
+            ("notify_watched_return", "1" if settings.notify_watched_return else "0"),
+            ("notify_watched_leave", "1" if settings.notify_watched_leave else "0"),
+            ("watched_absence_minutes", str(settings.watched_absence_minutes)),
+            ("watched_return_minutes", str(settings.watched_return_minutes)),
+        ]
+        for key, value in settings_pairs:
+            await db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (key, value)
+            )
+        await db.commit()
+
+
+# ============================================================================
+# Device Groups Management
+# ============================================================================
+
+async def get_groups() -> list[DeviceGroup]:
+    """Get all device groups."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM device_groups ORDER BY name") as cursor:
+            rows = await cursor.fetchall()
+            return [
+                DeviceGroup(
+                    id=row["id"],
+                    name=row["name"],
+                    color=row["color"] or "#3b82f6",
+                    icon=row["icon"] or "📁",
+                )
+                for row in rows
+            ]
+
+
+async def get_group(group_id: int) -> Optional[DeviceGroup]:
+    """Get a device group by ID."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM device_groups WHERE id = ?", (group_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return DeviceGroup(
+                    id=row["id"],
+                    name=row["name"],
+                    color=row["color"] or "#3b82f6",
+                    icon=row["icon"] or "📁",
+                )
+            return None
+
+
+async def create_group(name: str, color: str = "#3b82f6", icon: str = "📁") -> DeviceGroup:
+    """Create a new device group."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO device_groups (name, color, icon) VALUES (?, ?, ?)",
+            (name, color, icon)
+        )
+        await db.commit()
+        return DeviceGroup(id=cursor.lastrowid, name=name, color=color, icon=icon)
+
+
+async def update_group(group_id: int, name: str, color: str, icon: str) -> None:
+    """Update a device group."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE device_groups SET name = ?, color = ?, icon = ? WHERE id = ?",
+            (name, color, icon, group_id)
+        )
+        await db.commit()
+
+
+async def delete_group(group_id: int) -> None:
+    """Delete a device group and unassign all devices."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Unassign devices from this group
+        await db.execute(
+            "UPDATE devices SET group_id = NULL WHERE group_id = ?",
+            (group_id,)
+        )
+        # Delete the group
+        await db.execute("DELETE FROM device_groups WHERE id = ?", (group_id,))
+        await db.commit()
+
+
+async def set_device_group(mac: str, group_id: Optional[int]) -> None:
+    """Assign a device to a group (or remove from group if None)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE devices SET group_id = ? WHERE mac = ?",
+            (group_id, mac)
+        )
+        await db.commit()
+
+
+async def get_devices_by_group(group_id: int) -> list[Device]:
+    """Get all devices in a group."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM devices WHERE group_id = ? ORDER BY last_seen DESC",
+            (group_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_parse_device_row(row) for row in rows]
+
+
+async def get_watched_devices() -> list[Device]:
+    """Get all watched (devices of interest)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM devices WHERE watched = 1 ORDER BY last_seen DESC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_parse_device_row(row) for row in rows]
+
+
+async def get_rssi_history(mac: str, days: int = 7) -> list[dict]:
+    """Get RSSI history for a device for charting."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT timestamp, rssi
+            FROM sightings
+            WHERE mac = ? AND rssi IS NOT NULL AND timestamp > datetime('now', ?)
+            ORDER BY timestamp ASC
+            """,
+            (mac, f"-{days} days")
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {"timestamp": row[0], "rssi": row[1]}
                 for row in rows
             ]
