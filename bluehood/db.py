@@ -25,6 +25,7 @@ class Device:
     bt_type: str = "ble"  # "ble" or "classic"
     device_class: Optional[int] = None  # Classic BT device class
     group_id: Optional[int] = None  # Device group
+    notes: Optional[str] = None  # Operator notes
 
     def __post_init__(self):
         if self.service_uuids is None:
@@ -112,6 +113,7 @@ async def init_db() -> None:
             ("bt_type", "TEXT DEFAULT 'ble'"),
             ("device_class", "INTEGER"),
             ("group_id", "INTEGER REFERENCES device_groups(id)"),
+            ("notes", "TEXT"),
         ]
 
         for column, column_type in migrations:
@@ -150,6 +152,7 @@ def _parse_device_row(row) -> Device:
         bt_type=row["bt_type"] if "bt_type" in keys and row["bt_type"] else "ble",
         device_class=row["device_class"] if "device_class" in keys else None,
         group_id=row["group_id"] if "group_id" in keys else None,
+        notes=row["notes"] if "notes" in keys else None,
     )
 
 
@@ -304,6 +307,16 @@ async def set_device_type(mac: str, device_type: str) -> None:
         await db.execute(
             "UPDATE devices SET device_type = ? WHERE mac = ?",
             (device_type, mac)
+        )
+        await db.commit()
+
+
+async def set_device_notes(mac: str, notes: Optional[str]) -> None:
+    """Set operator notes for a device."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE devices SET notes = ? WHERE mac = ?",
+            (notes if notes else None, mac)
         )
         await db.commit()
 
@@ -659,3 +672,222 @@ async def get_rssi_history(mac: str, days: int = 7) -> list[dict]:
                 {"timestamp": row[0], "rssi": row[1]}
                 for row in rows
             ]
+
+
+# ============================================================================
+# Dwell Time Analysis
+# ============================================================================
+
+async def get_dwell_time(mac: str, days: int = 30, gap_minutes: int = 15) -> dict:
+    """Calculate dwell time statistics for a device.
+
+    Dwell time is calculated as continuous presence periods, where gaps
+    larger than gap_minutes start a new session.
+
+    Returns:
+        dict with total_minutes, session_count, avg_session_minutes,
+        longest_session_minutes, sessions list
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT timestamp FROM sightings
+            WHERE mac = ? AND timestamp > datetime('now', ?)
+            ORDER BY timestamp ASC
+            """,
+            (mac, f"-{days} days")
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+    if not rows:
+        return {
+            "total_minutes": 0,
+            "session_count": 0,
+            "avg_session_minutes": 0,
+            "longest_session_minutes": 0,
+            "sessions": []
+        }
+
+    # Parse timestamps and calculate sessions
+    timestamps = [datetime.fromisoformat(row[0]) for row in rows]
+    gap_threshold = gap_minutes * 60  # Convert to seconds
+
+    sessions = []
+    session_start = timestamps[0]
+    session_end = timestamps[0]
+
+    for i in range(1, len(timestamps)):
+        gap = (timestamps[i] - session_end).total_seconds()
+        if gap > gap_threshold:
+            # End current session, start new one
+            duration = (session_end - session_start).total_seconds() / 60
+            sessions.append({
+                "start": session_start.isoformat(),
+                "end": session_end.isoformat(),
+                "duration_minutes": round(duration, 1)
+            })
+            session_start = timestamps[i]
+        session_end = timestamps[i]
+
+    # Don't forget the last session
+    duration = (session_end - session_start).total_seconds() / 60
+    sessions.append({
+        "start": session_start.isoformat(),
+        "end": session_end.isoformat(),
+        "duration_minutes": round(duration, 1)
+    })
+
+    total_minutes = sum(s["duration_minutes"] for s in sessions)
+    longest = max(s["duration_minutes"] for s in sessions) if sessions else 0
+
+    return {
+        "total_minutes": round(total_minutes, 1),
+        "session_count": len(sessions),
+        "avg_session_minutes": round(total_minutes / len(sessions), 1) if sessions else 0,
+        "longest_session_minutes": round(longest, 1),
+        "sessions": sessions[-10:]  # Return last 10 sessions
+    }
+
+
+# ============================================================================
+# Device Correlation Analysis
+# ============================================================================
+
+async def get_correlated_devices(mac: str, days: int = 30, window_minutes: int = 5) -> list[dict]:
+    """Find devices frequently seen around the same time as the target device.
+
+    This helps identify devices that may belong to the same person or group.
+
+    Args:
+        mac: Target device MAC address
+        days: Number of days to analyze
+        window_minutes: Time window for co-occurrence (default 5 minutes)
+
+    Returns:
+        List of correlated devices with correlation score
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        # Get all sightings of the target device
+        async with db.execute(
+            """
+            SELECT timestamp FROM sightings
+            WHERE mac = ? AND timestamp > datetime('now', ?)
+            """,
+            (mac, f"-{days} days")
+        ) as cursor:
+            target_sightings = await cursor.fetchall()
+
+        if not target_sightings:
+            return []
+
+        target_count = len(target_sightings)
+
+        # For each target sighting, find other devices seen within the window
+        # Using a single query for efficiency
+        async with db.execute(
+            """
+            SELECT
+                s2.mac,
+                d.vendor,
+                d.friendly_name,
+                d.device_type,
+                COUNT(*) as co_occurrences,
+                d.total_sightings
+            FROM sightings s1
+            JOIN sightings s2 ON s2.mac != s1.mac
+                AND s2.timestamp BETWEEN datetime(s1.timestamp, ?) AND datetime(s1.timestamp, ?)
+            JOIN devices d ON d.mac = s2.mac
+            WHERE s1.mac = ?
+                AND s1.timestamp > datetime('now', ?)
+                AND d.ignored = 0
+            GROUP BY s2.mac
+            HAVING co_occurrences >= 2
+            ORDER BY co_occurrences DESC
+            LIMIT 20
+            """,
+            (f"-{window_minutes} minutes", f"+{window_minutes} minutes", mac, f"-{days} days")
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        results = []
+        for row in rows:
+            # Calculate correlation score (0-100)
+            # Based on ratio of co-occurrences to target sightings
+            correlation = min(100, round((row["co_occurrences"] / target_count) * 100))
+
+            results.append({
+                "mac": row["mac"],
+                "vendor": row["vendor"],
+                "friendly_name": row["friendly_name"],
+                "device_type": row["device_type"],
+                "co_occurrences": row["co_occurrences"],
+                "total_sightings": row["total_sightings"],
+                "correlation_score": correlation
+            })
+
+        return results
+
+
+# ============================================================================
+# Proximity Zone Helpers
+# ============================================================================
+
+def rssi_to_proximity_zone(rssi: int) -> str:
+    """Convert RSSI value to a proximity zone label.
+
+    RSSI ranges are approximate and vary by device/environment:
+    - Immediate: Very close (< 1m)
+    - Near: Close proximity (1-3m)
+    - Far: Same room/area (3-10m)
+    - Remote: Detectable but far (> 10m)
+    """
+    if rssi is None:
+        return "unknown"
+    if rssi >= -50:
+        return "immediate"
+    elif rssi >= -65:
+        return "near"
+    elif rssi >= -80:
+        return "far"
+    else:
+        return "remote"
+
+
+async def get_proximity_stats(mac: str, days: int = 7) -> dict:
+    """Get proximity zone statistics for a device.
+
+    Returns distribution of sightings across proximity zones.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT rssi FROM sightings
+            WHERE mac = ? AND rssi IS NOT NULL AND timestamp > datetime('now', ?)
+            """,
+            (mac, f"-{days} days")
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+    zones = {"immediate": 0, "near": 0, "far": 0, "remote": 0}
+    for row in rows:
+        zone = rssi_to_proximity_zone(row[0])
+        if zone in zones:
+            zones[zone] += 1
+
+    total = sum(zones.values())
+    if total > 0:
+        zones_pct = {k: round(v / total * 100, 1) for k, v in zones.items()}
+    else:
+        zones_pct = {k: 0 for k in zones}
+
+    # Determine dominant zone
+    dominant = max(zones.items(), key=lambda x: x[1])[0] if total > 0 else "unknown"
+
+    return {
+        "zones": zones,
+        "zones_percent": zones_pct,
+        "total_readings": total,
+        "dominant_zone": dominant
+    }

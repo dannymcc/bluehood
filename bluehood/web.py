@@ -290,6 +290,32 @@ HTML_TEMPLATE = """
 
         .search-input::placeholder { color: var(--text-muted); }
 
+        .form-input {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 3px;
+            padding: 0.6rem 0.75rem;
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            width: 100%;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent-red);
+        }
+
+        .kbd {
+            display: inline-block;
+            padding: 0.15rem 0.4rem;
+            font-size: 0.65rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 2px;
+            color: var(--text-muted);
+        }
+
         .btn {
             background: var(--bg-tertiary);
             border: 1px solid var(--border-color);
@@ -754,7 +780,7 @@ HTML_TEMPLATE = """
     </div>
 
     <footer class="footer">
-        BLUEHOOD v0.4.0 // Bluetooth Reconnaissance Framework // <a href="https://github.com/dannymcc/bluehood">Source</a>
+        BLUEHOOD v0.5.0 // Bluetooth Reconnaissance Framework // <a href="https://github.com/dannymcc/bluehood">Source</a> // <span class="kbd">?</span> Shortcuts
     </footer>
 
     <!-- Target Detail Modal -->
@@ -905,8 +931,11 @@ HTML_TEMPLATE = """
             } catch (error) { console.error('Error:', error); }
         }
 
+        let currentDeviceMac = null;
+
         function renderModal(data) {
             const d = data.device;
+            currentDeviceMac = d.mac;
             const content = document.getElementById('modal-content');
 
             let rssiDisplay = '—';
@@ -919,6 +948,10 @@ HTML_TEMPLATE = """
                 rssiDisplay = rssi + ' dBm (' + strength + ')';
             }
 
+            const proximityColors = { immediate: '#16a34a', near: '#d97706', far: '#ea580c', remote: '#dc2626', unknown: '#555' };
+            const proximityZone = data.proximity_zone || 'unknown';
+            const proximityColor = proximityColors[proximityZone] || '#555';
+
             const watchBtnText = d.watched ? '★ WATCHING' : '☆ WATCH TARGET';
             const watchBtnClass = d.watched ? 'btn btn-watch active' : 'btn btn-watch';
 
@@ -929,13 +962,18 @@ HTML_TEMPLATE = """
                 '<div class="detail-item"><div class="detail-label">MAC Address</div><div class="detail-value mono">' + d.mac + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Classification</div><div class="detail-value">' + data.type_label + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Vendor OUI</div><div class="detail-value">' + (d.vendor || '—') + '</div></div>' +
-                '<div class="detail-item"><div class="detail-label">Identifier</div><div class="detail-value">' + (d.friendly_name || '—') + '</div></div>' +
+                '<div class="detail-item"><div class="detail-label">Proximity Zone</div><div class="detail-value" style="color: ' + proximityColor + '; text-transform: uppercase;">' + proximityZone + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">First Contact</div><div class="detail-value mono">' + (d.first_seen ? new Date(d.first_seen).toLocaleString() : '—') + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Last Contact</div><div class="detail-value mono">' + (d.last_seen ? new Date(d.last_seen).toLocaleString() : '—') + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Total Sightings</div><div class="detail-value highlight">' + d.total_sightings + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Signal Strength</div><div class="detail-value">' + rssiDisplay + '</div></div>' +
                 '<div class="detail-item full"><div class="detail-label">Behavioral Pattern</div><div class="detail-value">' + (data.pattern || 'Insufficient data') + '</div></div>' +
                 '<div class="detail-item full"><div class="detail-label">BLE Service Fingerprint</div><div class="detail-value mono" style="font-size:0.75rem;">' + (data.uuid_names && data.uuid_names.length > 0 ? data.uuid_names.join(', ') : '—') + '</div></div>' +
+                '<div class="detail-item full"><div class="detail-label">Operator Notes</div><textarea class="form-input" id="device-notes" rows="2" style="font-size: 0.8rem; resize: vertical;" placeholder="Add notes...">' + (d.notes || '') + '</textarea><button class="btn" style="margin-top: 0.5rem;" onclick="saveNotes(\\'' + d.mac + '\\')">Save Notes</button></div>' +
+                '</div>' +
+                '<div class="heatmap-section">' +
+                '<div class="heatmap-title">Dwell Time Analysis (30d)</div>' +
+                '<div id="dwell-stats" class="heatmap" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; text-align: center;"><div style="color: var(--text-muted);">Loading...</div></div>' +
                 '</div>' +
                 '<div class="heatmap-section">' +
                 '<div class="heatmap-title">Hourly Activity Matrix (30d)</div>' +
@@ -952,9 +990,66 @@ HTML_TEMPLATE = """
                 '<div class="heatmap-section" id="rssi-section">' +
                 '<div class="heatmap-title">Signal History (7d)</div>' +
                 '<div class="rssi-chart" id="rssi-chart"><div style="color: var(--text-muted); font-size: 0.75rem; text-align: center; padding-top: 1.5rem;">Loading...</div></div>' +
+                '</div>' +
+                '<div class="heatmap-section">' +
+                '<div class="heatmap-title">Correlated Devices</div>' +
+                '<div id="correlated-devices" class="heatmap"><div style="color: var(--text-muted);">Loading...</div></div>' +
                 '</div>';
 
             loadRssiChart(d.mac);
+            loadDwellStats(d.mac);
+            loadCorrelatedDevices(d.mac);
+        }
+
+        async function loadDwellStats(mac) {
+            const container = document.getElementById('dwell-stats');
+            if (!container) return;
+            try {
+                const response = await fetch('/api/device/' + encodeURIComponent(mac) + '/dwell?days=30');
+                const data = await response.json();
+                container.innerHTML = '<div><div style="font-size: 1.25rem; color: var(--accent-amber);">' + Math.round(data.total_minutes) + '</div><div style="font-size: 0.65rem; color: var(--text-muted);">TOTAL MIN</div></div>' +
+                    '<div><div style="font-size: 1.25rem; color: var(--accent-green);">' + data.session_count + '</div><div style="font-size: 0.65rem; color: var(--text-muted);">SESSIONS</div></div>' +
+                    '<div><div style="font-size: 1.25rem; color: var(--accent-blue);">' + Math.round(data.avg_session_minutes) + '</div><div style="font-size: 0.65rem; color: var(--text-muted);">AVG MIN</div></div>' +
+                    '<div><div style="font-size: 1.25rem; color: var(--accent-red);">' + Math.round(data.longest_session_minutes) + '</div><div style="font-size: 0.65rem; color: var(--text-muted);">LONGEST</div></div>';
+            } catch (error) {
+                container.innerHTML = '<div style="color: var(--text-muted);">Error loading data</div>';
+            }
+        }
+
+        async function loadCorrelatedDevices(mac) {
+            const container = document.getElementById('correlated-devices');
+            if (!container) return;
+            try {
+                const response = await fetch('/api/device/' + encodeURIComponent(mac) + '/correlation?days=30');
+                const data = await response.json();
+                if (!data.correlated_devices || data.correlated_devices.length === 0) {
+                    container.innerHTML = '<div style="color: var(--text-muted); font-size: 0.75rem;">No correlated devices found</div>';
+                    return;
+                }
+                container.innerHTML = data.correlated_devices.slice(0, 5).map(c => {
+                    const name = c.friendly_name || c.vendor || c.mac.substring(0, 8);
+                    const corrBar = '<div style="background: var(--accent-red); height: 4px; width: ' + c.correlation_score + '%; border-radius: 2px;"></div>';
+                    return '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color);">' +
+                        '<span style="font-size: 0.75rem;">' + name + '</span>' +
+                        '<div style="display: flex; align-items: center; gap: 0.5rem;">' +
+                        '<div style="width: 60px;">' + corrBar + '</div>' +
+                        '<span style="font-size: 0.7rem; color: var(--text-muted);">' + c.correlation_score + '%</span>' +
+                        '</div></div>';
+                }).join('');
+            } catch (error) {
+                container.innerHTML = '<div style="color: var(--text-muted);">Error loading data</div>';
+            }
+        }
+
+        async function saveNotes(mac) {
+            const notes = document.getElementById('device-notes').value;
+            try {
+                await fetch('/api/device/' + encodeURIComponent(mac) + '/notes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ notes: notes })
+                });
+            } catch (error) { console.error('Error:', error); }
         }
 
         function renderTimeline(timeline) {
@@ -1063,6 +1158,40 @@ HTML_TEMPLATE = """
 
         document.getElementById('search').addEventListener('input', renderDevices);
         document.getElementById('device-modal').addEventListener('click', (e) => { if (e.target.id === 'device-modal') closeModal(); });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Ignore if typing in input/textarea
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            const modalActive = document.getElementById('device-modal').classList.contains('active');
+
+            if (e.key === 'Escape') {
+                closeModal();
+            } else if (e.key === 'r' || e.key === 'R') {
+                // Refresh
+                refreshDevices();
+            } else if (e.key === '/') {
+                // Focus search
+                e.preventDefault();
+                document.getElementById('search').focus();
+            } else if (e.key === 'w' && modalActive && currentDeviceMac) {
+                // Toggle watch on current device
+                toggleWatch(currentDeviceMac);
+            } else if (e.key === '1') {
+                document.querySelector('[data-filter="all"]').click();
+            } else if (e.key === '2') {
+                document.querySelector('[data-filter="watched"]').click();
+            } else if (e.key === '3') {
+                document.querySelector('[data-filter="phone"]').click();
+            } else if (e.key === '4') {
+                document.querySelector('[data-filter="laptop"]').click();
+            } else if (e.key === '5') {
+                document.querySelector('[data-filter="audio"]').click();
+            } else if (e.key === '?') {
+                alert('Keyboard Shortcuts:\\n\\n/ - Focus search\\nr - Refresh\\nEsc - Close modal\\nw - Toggle watch (in modal)\\n1-5 - Filter by type');
+            }
+        });
 
         refreshDevices();
         setInterval(refreshDevices, 10000);
@@ -1230,7 +1359,7 @@ SETTINGS_TEMPLATE = """
         </form>
     </main>
 
-    <footer class="footer">BLUEHOOD v0.4.0 // <a href="https://github.com/dannymcc/bluehood">Source</a></footer>
+    <footer class="footer">BLUEHOOD v0.5.0 // <a href="https://github.com/dannymcc/bluehood">Source</a></footer>
 
     <script>
         async function loadSettings() {
@@ -1421,7 +1550,7 @@ ABOUT_TEMPLATE = """
             </div>
         </div>
 
-        <div class="version">v0.4.0 // BUILD 2026.01</div>
+        <div class="version">v0.5.0 // BUILD 2026.01</div>
     </main>
 
     <footer class="footer">BLUEHOOD // <a href="https://github.com/dannymcc/bluehood">Source Repository</a></footer>
@@ -1450,6 +1579,10 @@ class WebServer:
         self.app.router.add_post("/api/device/{mac}/group", self.api_set_device_group)
         self.app.router.add_post("/api/device/{mac}/name", self.api_set_device_name)
         self.app.router.add_get("/api/device/{mac}/rssi", self.api_device_rssi)
+        self.app.router.add_get("/api/device/{mac}/dwell", self.api_device_dwell)
+        self.app.router.add_get("/api/device/{mac}/correlation", self.api_device_correlation)
+        self.app.router.add_get("/api/device/{mac}/proximity", self.api_device_proximity)
+        self.app.router.add_post("/api/device/{mac}/notes", self.api_set_device_notes)
         self.app.router.add_get("/api/search", self.api_search)
         self.app.router.add_get("/api/stats", self.api_stats)
         # Settings
@@ -1559,6 +1692,10 @@ class WebServer:
         rssi_values = [s.rssi for s in sightings if s.rssi is not None]
         avg_rssi = round(sum(rssi_values) / len(rssi_values)) if rssi_values else None
 
+        # Get proximity zone from latest RSSI
+        latest_rssi = rssi_values[0] if rssi_values else None
+        proximity_zone = db.rssi_to_proximity_zone(latest_rssi) if latest_rssi else "unknown"
+
         return web.json_response({
             "device": {
                 "mac": device.mac,
@@ -1571,11 +1708,13 @@ class WebServer:
                 "last_seen": device.last_seen.isoformat() if device.last_seen else None,
                 "total_sightings": device.total_sightings,
                 "service_uuids": device.service_uuids,
+                "notes": device.notes,
             },
             "type_label": get_type_label(device_type),
             "uuid_names": get_uuid_names(device.service_uuids),
             "pattern": pattern,
             "avg_rssi": avg_rssi,
+            "proximity_zone": proximity_zone,
             "hourly_heatmap": generate_hourly_heatmap(hourly),
             "daily_heatmap": generate_daily_heatmap(daily),
             "timeline": daily_timeline,
@@ -1641,6 +1780,48 @@ class WebServer:
 
         rssi_history = await db.get_rssi_history(mac, days)
         return web.json_response({"mac": mac, "rssi_history": rssi_history})
+
+    async def api_device_dwell(self, request: web.Request) -> web.Response:
+        """Get dwell time analysis for a device."""
+        mac = request.match_info["mac"]
+        days = int(request.query.get("days", "30"))
+        gap_minutes = int(request.query.get("gap", "15"))
+
+        dwell_data = await db.get_dwell_time(mac, days, gap_minutes)
+        return web.json_response({"mac": mac, **dwell_data})
+
+    async def api_device_correlation(self, request: web.Request) -> web.Response:
+        """Get correlated devices for a device."""
+        mac = request.match_info["mac"]
+        days = int(request.query.get("days", "30"))
+        window_minutes = int(request.query.get("window", "5"))
+
+        correlated = await db.get_correlated_devices(mac, days, window_minutes)
+        return web.json_response({"mac": mac, "correlated_devices": correlated})
+
+    async def api_device_proximity(self, request: web.Request) -> web.Response:
+        """Get proximity zone statistics for a device."""
+        mac = request.match_info["mac"]
+        days = int(request.query.get("days", "7"))
+
+        proximity = await db.get_proximity_stats(mac, days)
+        return web.json_response({"mac": mac, **proximity})
+
+    async def api_set_device_notes(self, request: web.Request) -> web.Response:
+        """Set notes for a device."""
+        mac = request.match_info["mac"]
+        device = await db.get_device(mac)
+
+        if not device:
+            return web.json_response({"error": "Device not found"}, status=404)
+
+        try:
+            data = await request.json()
+            notes = data.get("notes", "")
+            await db.set_device_notes(mac, notes if notes else None)
+            return web.json_response({"mac": mac, "notes": notes})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
 
     def _analyze_pattern(self, hourly: dict, daily: dict, sighting_count: int) -> str:
         """Simple pattern analysis from hourly/daily data."""

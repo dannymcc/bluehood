@@ -261,6 +261,40 @@ class BluehoodDaemon:
                 "clients": len(self.clients),
             }
 
+        elif cmd == "set_notes":
+            mac = request.get("mac")
+            notes = request.get("notes")
+            if mac:
+                await db.set_device_notes(mac, notes)
+                return {"status": "ok"}
+            return {"status": "error", "message": "Missing mac"}
+
+        elif cmd == "get_dwell_time":
+            mac = request.get("mac")
+            days = request.get("days", 30)
+            gap_minutes = request.get("gap_minutes", 15)
+            if mac:
+                dwell = await db.get_dwell_time(mac, days, gap_minutes)
+                return {"status": "ok", "dwell_time": dwell}
+            return {"status": "error", "message": "Missing mac"}
+
+        elif cmd == "get_correlated_devices":
+            mac = request.get("mac")
+            days = request.get("days", 30)
+            window_minutes = request.get("window_minutes", 5)
+            if mac:
+                correlated = await db.get_correlated_devices(mac, days, window_minutes)
+                return {"status": "ok", "correlated_devices": correlated}
+            return {"status": "error", "message": "Missing mac"}
+
+        elif cmd == "get_proximity_stats":
+            mac = request.get("mac")
+            days = request.get("days", 7)
+            if mac:
+                stats = await db.get_proximity_stats(mac, days)
+                return {"status": "ok", "proximity_stats": stats}
+            return {"status": "error", "message": "Missing mac"}
+
         else:
             return {"status": "error", "message": f"Unknown command: {cmd}"}
 
