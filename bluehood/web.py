@@ -10,7 +10,7 @@ from typing import Optional
 from aiohttp import web
 
 from . import db
-from .classifier import classify_device, get_type_icon, get_type_label, get_all_types, is_randomized_mac
+from .classifier import classify_device, get_type_icon, get_type_label, get_all_types, is_randomized_mac, get_uuid_names
 from .patterns import generate_hourly_heatmap, generate_daily_heatmap
 
 logger = logging.getLogger(__name__)
@@ -484,6 +484,36 @@ HTML_TEMPLATE = """
             font-size: 0.7rem;
         }
 
+        /* Timeline chart */
+        .timeline-chart {
+            display: flex;
+            align-items: flex-end;
+            gap: 2px;
+            height: 60px;
+            padding: 0.5rem 0;
+        }
+
+        .timeline-bar {
+            flex: 1;
+            min-width: 4px;
+            background: var(--accent-cyan);
+            border-radius: 2px 2px 0 0;
+            transition: background 0.15s;
+            cursor: pointer;
+        }
+
+        .timeline-bar:hover {
+            background: var(--accent-blue);
+        }
+
+        .timeline-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+
         /* Footer */
         .footer {
             text-align: center;
@@ -837,6 +867,10 @@ HTML_TEMPLATE = """
                     <span class="detail-label">Pattern</span>
                     <span class="detail-value">${data.pattern || 'Insufficient data'}</span>
                 </div>
+                <div class="detail-row">
+                    <span class="detail-label">BLE Services</span>
+                    <span class="detail-value">${data.uuid_names && data.uuid_names.length > 0 ? data.uuid_names.join(', ') : 'None detected'}</span>
+                </div>
 
                 <div class="heatmap-section">
                     <div class="heatmap-title">Hourly Activity (30 days)</div>
@@ -853,7 +887,37 @@ HTML_TEMPLATE = """
                         <div>${data.daily_heatmap || '-------'}</div>
                     </div>
                 </div>
+
+                <div class="heatmap-section">
+                    <div class="heatmap-title">Presence Timeline (30 days)</div>
+                    ${renderTimeline(data.timeline)}
+                </div>
             `;
+        }
+
+        function renderTimeline(timeline) {
+            if (!timeline || timeline.length === 0) {
+                return '<div style="color: var(--text-muted); font-size: 0.8rem;">No data available</div>';
+            }
+
+            const maxCount = Math.max(...timeline.map(d => d.count));
+            const bars = timeline.map(d => {
+                const height = maxCount > 0 ? (d.count / maxCount * 100) : 0;
+                const date = new Date(d.date);
+                const tooltip = date.toLocaleDateString() + ': ' + d.count + ' sightings';
+                return '<div class="timeline-bar" style="height: ' + height + '%" title="' + tooltip + '"></div>';
+            }).join('');
+
+            // Get first and last dates for labels
+            const firstDate = new Date(timeline[0].date);
+            const lastDate = new Date(timeline[timeline.length - 1].date);
+            const formatDate = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+            return '<div class="timeline-chart">' + bars + '</div>' +
+                   '<div class="timeline-labels">' +
+                   '<span>' + formatDate(firstDate) + '</span>' +
+                   '<span>' + formatDate(lastDate) + '</span>' +
+                   '</div>';
         }
 
         async function toggleWatch(mac) {
@@ -965,7 +1029,8 @@ class WebServer:
 
         device_list = []
         for d in devices:
-            device_type = d.device_type or classify_device(d.vendor, d.friendly_name)
+            # Use service UUIDs for better classification
+            device_type = d.device_type or classify_device(d.vendor, d.friendly_name, d.service_uuids)
             type_set.add(device_type)
             total_sightings += d.total_sightings
 
@@ -993,6 +1058,8 @@ class WebServer:
                 "first_seen": d.first_seen.isoformat() if d.first_seen else None,
                 "last_seen": d.last_seen.isoformat() if d.last_seen else None,
                 "total_sightings": d.total_sightings,
+                "service_uuids": d.service_uuids,
+                "uuid_names": get_uuid_names(d.service_uuids),
             })
 
         return web.json_response({
@@ -1014,7 +1081,8 @@ class WebServer:
         hourly = await db.get_hourly_distribution(mac, 30)
         daily = await db.get_daily_distribution(mac, 30)
         sightings = await db.get_sightings(mac, 30)
-        device_type = device.device_type or classify_device(device.vendor, device.friendly_name)
+        daily_timeline = await db.get_daily_sightings(mac, 30)
+        device_type = device.device_type or classify_device(device.vendor, device.friendly_name, device.service_uuids)
 
         # Calculate pattern summary
         pattern = self._analyze_pattern(hourly, daily, len(sightings))
@@ -1034,12 +1102,15 @@ class WebServer:
                 "first_seen": device.first_seen.isoformat() if device.first_seen else None,
                 "last_seen": device.last_seen.isoformat() if device.last_seen else None,
                 "total_sightings": device.total_sightings,
+                "service_uuids": device.service_uuids,
             },
             "type_label": get_type_label(device_type),
+            "uuid_names": get_uuid_names(device.service_uuids),
             "pattern": pattern,
             "avg_rssi": avg_rssi,
             "hourly_heatmap": generate_hourly_heatmap(hourly),
             "daily_heatmap": generate_daily_heatmap(daily),
+            "timeline": daily_timeline,
         })
 
     async def api_toggle_watch(self, request: web.Request) -> web.Response:

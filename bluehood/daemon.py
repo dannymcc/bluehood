@@ -267,7 +267,8 @@ class BluehoodDaemon:
                     await db.upsert_device(
                         mac=device.mac,
                         vendor=device.vendor,
-                        rssi=device.rssi
+                        rssi=device.rssi,
+                        service_uuids=device.service_uuids,
                     )
 
                 # Notify connected clients

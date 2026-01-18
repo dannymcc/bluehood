@@ -40,6 +40,11 @@ class ScannedDevice:
     name: Optional[str]
     rssi: int
     vendor: Optional[str] = None
+    service_uuids: list[str] = None  # BLE service UUIDs for fingerprinting
+
+    def __post_init__(self):
+        if self.service_uuids is None:
+            self.service_uuids = []
 
 
 def list_adapters() -> list[BluetoothAdapter]:
@@ -201,11 +206,15 @@ class BluetoothScanner:
                 mac = device.address
                 vendor = await self._get_vendor(mac)
 
+                # Capture service UUIDs for device fingerprinting
+                service_uuids = list(adv_data.service_uuids) if adv_data.service_uuids else []
+
                 devices.append(ScannedDevice(
                     mac=mac,
                     name=device.name or adv_data.local_name,
                     rssi=adv_data.rssi,
                     vendor=vendor,
+                    service_uuids=service_uuids,
                 ))
 
             logger.info(f"Scan complete: found {len(devices)} devices")

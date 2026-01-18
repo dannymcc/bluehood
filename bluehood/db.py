@@ -1,5 +1,6 @@
 """Database operations for bluehood."""
 
+import json
 import aiosqlite
 from datetime import datetime
 from typing import Optional
@@ -20,6 +21,11 @@ class Device:
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
     total_sightings: int = 0
+    service_uuids: list[str] = None  # BLE service UUIDs for fingerprinting
+
+    def __post_init__(self):
+        if self.service_uuids is None:
+            self.service_uuids = []
 
 
 @dataclass
@@ -72,6 +78,12 @@ async def init_db() -> None:
             await db.commit()
         except Exception:
             pass  # Column already exists
+        # Migration: add service_uuids column if missing
+        try:
+            await db.execute("ALTER TABLE devices ADD COLUMN service_uuids TEXT")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
         await db.commit()
 
 
@@ -84,6 +96,13 @@ async def get_device(mac: str) -> Optional[Device]:
         ) as cursor:
             row = await cursor.fetchone()
             if row:
+                # Parse service_uuids from JSON
+                service_uuids = []
+                if "service_uuids" in row.keys() and row["service_uuids"]:
+                    try:
+                        service_uuids = json.loads(row["service_uuids"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 return Device(
                     mac=row["mac"],
                     vendor=row["vendor"],
@@ -94,6 +113,7 @@ async def get_device(mac: str) -> Optional[Device]:
                     first_seen=datetime.fromisoformat(row["first_seen"]) if row["first_seen"] else None,
                     last_seen=datetime.fromisoformat(row["last_seen"]) if row["last_seen"] else None,
                     total_sightings=row["total_sightings"],
+                    service_uuids=service_uuids,
                 )
             return None
 
@@ -109,8 +129,16 @@ async def get_all_devices(include_ignored: bool = True) -> list[Device]:
 
         async with db.execute(query) as cursor:
             rows = await cursor.fetchall()
-            return [
-                Device(
+            devices = []
+            for row in rows:
+                # Parse service_uuids from JSON
+                service_uuids = []
+                if "service_uuids" in row.keys() and row["service_uuids"]:
+                    try:
+                        service_uuids = json.loads(row["service_uuids"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                devices.append(Device(
                     mac=row["mac"],
                     vendor=row["vendor"],
                     friendly_name=row["friendly_name"],
@@ -120,14 +148,20 @@ async def get_all_devices(include_ignored: bool = True) -> list[Device]:
                     first_seen=datetime.fromisoformat(row["first_seen"]) if row["first_seen"] else None,
                     last_seen=datetime.fromisoformat(row["last_seen"]) if row["last_seen"] else None,
                     total_sightings=row["total_sightings"],
-                )
-                for row in rows
-            ]
+                    service_uuids=service_uuids,
+                ))
+            return devices
 
 
-async def upsert_device(mac: str, vendor: Optional[str] = None, rssi: Optional[int] = None) -> Device:
+async def upsert_device(
+    mac: str,
+    vendor: Optional[str] = None,
+    rssi: Optional[int] = None,
+    service_uuids: Optional[list[str]] = None
+) -> Device:
     """Insert or update a device and record a sighting."""
     now = datetime.now()
+    uuids_json = json.dumps(service_uuids) if service_uuids else None
 
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -136,33 +170,41 @@ async def upsert_device(mac: str, vendor: Optional[str] = None, rssi: Optional[i
             existing = await cursor.fetchone()
 
         if existing:
-            # Update existing device - also update vendor if we have one and device doesn't
+            # Build update based on what we have
+            updates = ["last_seen = ?", "total_sightings = total_sightings + 1"]
+            params = [now.isoformat()]
+
+            # Update vendor if we have one and device doesn't
             if vendor and not existing["vendor"]:
-                await db.execute(
-                    """
-                    UPDATE devices
-                    SET last_seen = ?, total_sightings = total_sightings + 1, vendor = ?
-                    WHERE mac = ?
-                    """,
-                    (now.isoformat(), vendor, mac)
-                )
-            else:
-                await db.execute(
-                    """
-                    UPDATE devices
-                    SET last_seen = ?, total_sightings = total_sightings + 1
-                    WHERE mac = ?
-                    """,
-                    (now.isoformat(), mac)
-                )
+                updates.append("vendor = ?")
+                params.append(vendor)
+
+            # Update/merge service_uuids if we have new ones
+            if service_uuids:
+                existing_uuids = []
+                if "service_uuids" in existing.keys() and existing["service_uuids"]:
+                    try:
+                        existing_uuids = json.loads(existing["service_uuids"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                # Merge UUIDs (keep unique)
+                merged = list(set(existing_uuids + service_uuids))
+                updates.append("service_uuids = ?")
+                params.append(json.dumps(merged))
+
+            params.append(mac)
+            await db.execute(
+                f"UPDATE devices SET {', '.join(updates)} WHERE mac = ?",
+                params
+            )
         else:
             # Insert new device
             await db.execute(
                 """
-                INSERT INTO devices (mac, vendor, first_seen, last_seen, total_sightings)
-                VALUES (?, ?, ?, ?, 1)
+                INSERT INTO devices (mac, vendor, first_seen, last_seen, total_sightings, service_uuids)
+                VALUES (?, ?, ?, ?, 1, ?)
                 """,
-                (mac, vendor, now.isoformat(), now.isoformat())
+                (mac, vendor, now.isoformat(), now.isoformat(), uuids_json)
             )
 
         # Record sighting
@@ -273,6 +315,30 @@ async def get_daily_distribution(mac: str, days: int = 30) -> dict[int, int]:
             rows = await cursor.fetchall()
             # SQLite %w: 0=Sunday, 1=Monday... Convert to 0=Monday
             return {(int(row[0]) - 1) % 7: row[1] for row in rows}
+
+
+async def get_daily_sightings(mac: str, days: int = 30) -> list[dict]:
+    """Get daily sighting counts for timeline visualization."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT date(timestamp) as date, COUNT(*) as count, AVG(rssi) as avg_rssi
+            FROM sightings
+            WHERE mac = ? AND timestamp > datetime('now', ?)
+            GROUP BY date(timestamp)
+            ORDER BY date ASC
+            """,
+            (mac, f"-{days} days")
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "date": row[0],
+                    "count": row[1],
+                    "avg_rssi": round(row[2]) if row[2] else None,
+                }
+                for row in rows
+            ]
 
 
 async def cleanup_old_sightings(days: int = 90) -> int:

@@ -214,21 +214,149 @@ VENDOR_PATTERNS = [
     ("orbi", TYPE_NETWORK),
 ]
 
+# BLE Service UUID patterns for device fingerprinting
+# Maps UUID patterns to device types (more specific = higher priority)
+# UUIDs can be 16-bit (0x180D), 32-bit, or full 128-bit
+SERVICE_UUID_PATTERNS = [
+    # Wearables / Fitness
+    ("0000180d", TYPE_WEARABLE),  # Heart Rate Service
+    ("0000181c", TYPE_WEARABLE),  # User Data
+    ("00001814", TYPE_WEARABLE),  # Running Speed and Cadence
+    ("00001816", TYPE_WEARABLE),  # Cycling Speed and Cadence
+    ("00001818", TYPE_WEARABLE),  # Cycling Power
+    ("0000181b", TYPE_WEARABLE),  # Body Composition
+    ("0000181d", TYPE_WEARABLE),  # Weight Scale
 
-def classify_device(vendor: Optional[str], name: Optional[str] = None) -> str:
+    # Health devices
+    ("00001810", TYPE_WEARABLE),  # Blood Pressure
+    ("00001808", TYPE_WEARABLE),  # Glucose
+    ("00001809", TYPE_WEARABLE),  # Health Thermometer
+
+    # Audio devices (A2DP and related)
+    ("0000110b", TYPE_HEADPHONES),  # A2DP Audio Sink
+    ("0000110a", TYPE_HEADPHONES),  # A2DP Audio Source
+    ("0000111e", TYPE_HEADPHONES),  # Handsfree
+    ("0000111f", TYPE_HEADPHONES),  # Handsfree Audio Gateway
+    ("00001108", TYPE_HEADPHONES),  # Headset
+    ("0000110d", TYPE_HEADPHONES),  # A2DP (Advanced Audio)
+    ("00001203", TYPE_HEADPHONES),  # Generic Audio
+    ("0000184e", TYPE_HEADPHONES),  # Audio Stream Control
+    ("0000184f", TYPE_HEADPHONES),  # Broadcast Audio Scan
+    ("00001850", TYPE_HEADPHONES),  # Published Audio Capabilities
+    ("00001853", TYPE_HEADPHONES),  # Common Audio
+
+    # Gaming / HID
+    ("00001812", TYPE_GAMING),  # Human Interface Device (keyboards, mice, controllers)
+    ("00001124", TYPE_GAMING),  # HID (legacy)
+
+    # Apple-specific (Continuity, AirDrop, etc.)
+    ("d0611e78", TYPE_PHONE),  # Apple Continuity
+    ("7905f431", TYPE_PHONE),  # Apple Notification Center
+    ("89d3502b", TYPE_PHONE),  # Apple Media Service
+    ("0000fd6f", TYPE_PHONE),  # Apple Continuity short UUID
+
+    # Google/Android
+    ("0000fe9f", TYPE_PHONE),  # Google Fast Pair
+    ("0000fe2c", TYPE_PHONE),  # Google Nearby
+
+    # Smart Home / IoT
+    ("0000181a", TYPE_SMART_HOME),  # Environmental Sensing
+    ("0000fef5", TYPE_SMART_HOME),  # Philips Hue / Dialog
+    ("0000fee7", TYPE_SMART_HOME),  # Tencent IoT
+    ("0000feaa", TYPE_SMART_HOME),  # Google Eddystone (beacons)
+    ("0000feab", TYPE_SMART_HOME),  # Nokia beacons
+
+    # Trackers / Finders
+    ("0000fe2c", TYPE_SMART_HOME),  # Tile tracker
+    ("0000feed", TYPE_SMART_HOME),  # Tile
+    ("0000febe", TYPE_SMART_HOME),  # Bose
+    ("0000feec", TYPE_SMART_HOME),  # Tile
+
+    # Location/Navigation
+    ("00001819", TYPE_WEARABLE),  # Location and Navigation
+
+    # Watches (specific manufacturer UUIDs)
+    ("cba20d00", TYPE_WATCH),  # SwitchBot
+    ("0000fee0", TYPE_WATCH),  # Xiaomi Mi Band / Amazfit
+    ("0000feea", TYPE_WATCH),  # Swirl Networks (wearables)
+
+    # Printers
+    ("00001118", TYPE_PRINTER),  # Direct Printing
+    ("00001119", TYPE_PRINTER),  # Reference Printing
+
+    # Camera
+    ("00001822", TYPE_CAMERA),  # Camera Profile
+]
+
+# Human-readable names for common service UUIDs
+SERVICE_UUID_NAMES = {
+    "0000180d": "Heart Rate",
+    "0000180f": "Battery",
+    "00001800": "Generic Access",
+    "00001801": "Generic Attribute",
+    "0000180a": "Device Info",
+    "00001812": "HID",
+    "0000181a": "Environmental",
+    "0000110b": "A2DP Sink",
+    "0000110a": "A2DP Source",
+    "0000fd6f": "Apple Continuity",
+    "0000fe9f": "Google Fast Pair",
+    "0000fee0": "Mi Band",
+}
+
+
+def classify_by_uuids(service_uuids: Optional[list[str]]) -> Optional[str]:
     """
-    Classify a device based on its vendor and optional name.
+    Classify a device based on its BLE service UUIDs.
+    Returns device type or None if no match.
+    """
+    if not service_uuids:
+        return None
+
+    # Normalize UUIDs to lowercase for comparison
+    normalized = [uuid.lower().replace("-", "") for uuid in service_uuids]
+
+    # Check each UUID against patterns
+    for uuid in normalized:
+        for pattern, device_type in SERVICE_UUID_PATTERNS:
+            if pattern in uuid:
+                return device_type
+
+    return None
+
+
+def get_uuid_names(service_uuids: Optional[list[str]]) -> list[str]:
+    """Get human-readable names for service UUIDs."""
+    if not service_uuids:
+        return []
+
+    names = []
+    for uuid in service_uuids:
+        normalized = uuid.lower().replace("-", "")
+        # Check for known UUIDs
+        for pattern, name in SERVICE_UUID_NAMES.items():
+            if pattern in normalized:
+                names.append(name)
+                break
+    return names
+
+
+def classify_device(
+    vendor: Optional[str],
+    name: Optional[str] = None,
+    service_uuids: Optional[list[str]] = None
+) -> str:
+    """
+    Classify a device based on its vendor, name, and service UUIDs.
     Returns a device type constant.
+
+    Priority: Service UUIDs > Name patterns > Vendor patterns
     """
-    if not vendor:
-        return TYPE_UNKNOWN
-
-    vendor_lower = vendor.lower()
-
-    # Check vendor patterns
-    for pattern, device_type in VENDOR_PATTERNS:
-        if pattern in vendor_lower:
-            return device_type
+    # Try UUID-based classification first (most accurate)
+    if service_uuids:
+        uuid_type = classify_by_uuids(service_uuids)
+        if uuid_type:
+            return uuid_type
 
     # Check name if provided (some devices advertise their type)
     if name:
@@ -253,6 +381,13 @@ def classify_device(vendor: Optional[str], name: Optional[str] = None) -> str:
             return TYPE_TV
         if any(x in name_lower for x in ["car", "vehicle", "model 3", "model y", "model s"]):
             return TYPE_VEHICLE
+
+    # Fall back to vendor-based classification
+    if vendor:
+        vendor_lower = vendor.lower()
+        for pattern, device_type in VENDOR_PATTERNS:
+            if pattern in vendor_lower:
+                return device_type
 
     return TYPE_UNKNOWN
 
