@@ -1034,15 +1034,16 @@ class WebServer:
             type_set.add(device_type)
             total_sightings += d.total_sightings
 
+            # Check if MAC is randomized (privacy feature)
+            randomized = is_randomized_mac(d.mac)
+
             if d.last_seen and d.last_seen.date() == today:
                 active_today += 1
 
-            # Count devices first seen in the past hour
-            if d.first_seen and d.first_seen >= one_hour_ago:
+            # Count devices first seen in the past hour (exclude randomized MACs - they rotate frequently)
+            if d.first_seen and d.first_seen >= one_hour_ago and not randomized:
                 new_past_hour += 1
 
-            # Check if MAC is randomized (privacy feature)
-            randomized = is_randomized_mac(d.mac)
             vendor_display = d.vendor if d.vendor else ("Randomized MAC" if randomized else None)
 
             device_list.append({
