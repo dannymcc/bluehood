@@ -227,15 +227,17 @@ async def upsert_device(
                 params.append(json.dumps(merged))
 
             # Update bt_type if we got classic BT info for a device we only had BLE for
-            if bt_type == "classic" and existing.get("bt_type") == "ble":
+            existing_bt_type = existing["bt_type"] if "bt_type" in existing.keys() else "ble"
+            if bt_type == "classic" and existing_bt_type == "ble":
                 updates.append("bt_type = ?")
                 params.append("both")
-            elif bt_type == "ble" and existing.get("bt_type") == "classic":
+            elif bt_type == "ble" and existing_bt_type == "classic":
                 updates.append("bt_type = ?")
                 params.append("both")
 
             # Update device_class if we have it and didn't before
-            if device_class and not existing.get("device_class"):
+            existing_device_class = existing["device_class"] if "device_class" in existing.keys() else None
+            if device_class and not existing_device_class:
                 updates.append("device_class = ?")
                 params.append(device_class)
 
