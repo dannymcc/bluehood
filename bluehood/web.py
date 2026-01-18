@@ -751,6 +751,9 @@ HTML_TEMPLATE = """
                 <button class="filter-btn" id="view-toggle" onclick="toggleViewMode()" style="width: 100%; justify-content: center;">
                     ☰ Compact View
                 </button>
+                <button class="filter-btn" id="screenshot-toggle" onclick="toggleScreenshotMode()" style="width: 100%; justify-content: center; margin-top: 0.5rem;">
+                    📷 Screenshot Mode
+                </button>
             </div>
         </aside>
 
@@ -833,6 +836,7 @@ HTML_TEMPLATE = """
         let currentFilter = 'all';
         let dateFilteredDevices = null;
         let compactView = localStorage.getItem('bluehood_compact_view') === 'true';
+        let screenshotMode = localStorage.getItem('bluehood_screenshot_mode') === 'true';
 
         function toggleViewMode() {
             compactView = !compactView;
@@ -846,6 +850,39 @@ HTML_TEMPLATE = """
             if (btn) {
                 btn.innerHTML = compactView ? '◫ Detailed View' : '☰ Compact View';
             }
+        }
+
+        function toggleScreenshotMode() {
+            screenshotMode = !screenshotMode;
+            localStorage.setItem('bluehood_screenshot_mode', screenshotMode);
+            updateScreenshotToggle();
+            renderDevices();
+        }
+
+        function updateScreenshotToggle() {
+            const btn = document.getElementById('screenshot-toggle');
+            if (btn) {
+                btn.innerHTML = screenshotMode ? '📷 Screenshot Mode ON' : '📷 Screenshot Mode';
+                btn.style.background = screenshotMode ? 'var(--accent-red)' : '';
+                btn.style.color = screenshotMode ? 'white' : '';
+            }
+        }
+
+        function obfuscateMAC(mac) {
+            if (!screenshotMode || !mac) return mac;
+            // Show first 2 octets, hide the rest: AA:BB:XX:XX:XX:XX
+            const parts = mac.split(':');
+            if (parts.length === 6) {
+                return parts[0] + ':' + parts[1] + ':XX:XX:XX:XX';
+            }
+            return mac.substring(0, 5) + ':XX:XX:XX:XX';
+        }
+
+        function obfuscateName(name) {
+            if (!screenshotMode || !name) return name;
+            // Show first 2 chars, then asterisks
+            if (name.length <= 2) return '**';
+            return name.substring(0, 2) + '*'.repeat(Math.min(name.length - 2, 8));
         }
 
         function showShortcutsModal() {
@@ -947,7 +984,8 @@ HTML_TEMPLATE = """
 
                 if (compactView) {
                     // Compact: Type, Name/MAC, Last Seen
-                    const displayName = d.friendly_name || d.vendor || d.mac;
+                    const rawDisplayName = d.friendly_name || d.vendor || d.mac;
+                    const displayName = d.friendly_name ? obfuscateName(rawDisplayName) : (d.vendor ? rawDisplayName : obfuscateMAC(rawDisplayName));
                     return '<tr onclick="showDevice(\\'' + d.mac + '\\')" style="height: auto;">' +
                         '<td style="padding: 0.4rem 0.5rem;"><span class="type-badge ' + typeClass + '" style="font-size: 0.65rem; padding: 0.15rem 0.4rem;">' + watchedStar + d.type_icon + '</span></td>' +
                         '<td colspan="3" style="padding: 0.4rem 0.5rem; font-size: 0.75rem;">' + displayName + '</td>' +
@@ -958,9 +996,9 @@ HTML_TEMPLATE = """
 
                 return '<tr onclick="showDevice(\\'' + d.mac + '\\')">' +
                     '<td><span class="type-badge ' + typeClass + '">' + watchedStar + d.type_icon + ' ' + d.type_label + '</span></td>' +
-                    '<td class="mac-addr">' + d.mac + '</td>' +
+                    '<td class="mac-addr">' + obfuscateMAC(d.mac) + '</td>' +
                     '<td class="vendor-name">' + (d.vendor || '—') + '</td>' +
-                    '<td class="device-name">' + (d.friendly_name || '—') + '</td>' +
+                    '<td class="device-name">' + (d.friendly_name ? obfuscateName(d.friendly_name) : '—') + '</td>' +
                     '<td class="sighting-count">' + d.total_sightings + '</td>' +
                     '<td class="last-seen ' + (isRecent ? 'recent' : '') + '">' + lastSeen + '</td>' +
                     '</tr>';
@@ -1025,7 +1063,7 @@ HTML_TEMPLATE = """
                 '<button class="' + watchBtnClass + '" id="watch-btn" onclick="toggleWatch(\\'' + d.mac + '\\')">' + watchBtnText + '</button>' +
                 '</div>' +
                 '<div class="detail-grid">' +
-                '<div class="detail-item"><div class="detail-label">MAC Address</div><div class="detail-value mono">' + d.mac + '</div></div>' +
+                '<div class="detail-item"><div class="detail-label">MAC Address</div><div class="detail-value mono">' + obfuscateMAC(d.mac) + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Classification</div><div class="detail-value">' + data.type_label + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Vendor OUI</div><div class="detail-value">' + (d.vendor || '—') + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Proximity Zone</div><div class="detail-value" style="color: ' + proximityColor + '; text-transform: uppercase;">' + proximityZone + '</div></div>' +
@@ -1125,8 +1163,10 @@ HTML_TEMPLATE = """
                     return;
                 }
                 container.innerHTML = data.correlated_devices.slice(0, 5).map(c => {
-                    const primaryName = c.friendly_name || c.vendor || 'Unknown';
-                    const secondaryInfo = c.friendly_name ? (c.vendor || c.mac) : c.mac;
+                    const rawPrimaryName = c.friendly_name || c.vendor || 'Unknown';
+                    const primaryName = c.friendly_name ? obfuscateName(rawPrimaryName) : rawPrimaryName;
+                    const rawSecondaryInfo = c.friendly_name ? (c.vendor || c.mac) : c.mac;
+                    const secondaryInfo = (c.friendly_name && c.vendor) ? rawSecondaryInfo : obfuscateMAC(rawSecondaryInfo);
                     const corrBar = '<div style="background: var(--accent-red); height: 4px; width: ' + c.correlation_score + '%; border-radius: 2px;"></div>';
                     return '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); cursor: pointer;" onclick="openDeviceModal(\\'' + c.mac + '\\')">' +
                         '<div style="flex: 1; min-width: 0;">' +
@@ -1238,7 +1278,9 @@ HTML_TEMPLATE = """
         function exportData() {
             const csv = ['MAC,Vendor,Identifier,Class,Sightings,Last_Contact'];
             allDevices.forEach(d => {
-                csv.push([d.mac, d.vendor || '', d.friendly_name || '', d.device_type || '', d.total_sightings, d.last_seen || ''].join(','));
+                const mac = obfuscateMAC(d.mac);
+                const name = d.friendly_name ? obfuscateName(d.friendly_name) : '';
+                csv.push([mac, d.vendor || '', name, d.device_type || '', d.total_sightings, d.last_seen || ''].join(','));
             });
             const blob = new Blob([csv.join('\\n')], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -1298,6 +1340,7 @@ HTML_TEMPLATE = """
         });
 
         updateViewToggle();
+        updateScreenshotToggle();
         refreshDevices();
         setInterval(refreshDevices, 10000);
     </script>
