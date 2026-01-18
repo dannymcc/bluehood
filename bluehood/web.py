@@ -137,6 +137,20 @@ HTML_TEMPLATE = """
             50% { opacity: 0.5; }
         }
 
+        .header-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            transition: all 0.15s ease;
+        }
+
+        .header-link:hover {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+        }
+
         /* Main Content */
         .main {
             max-width: 1400px;
@@ -603,6 +617,8 @@ HTML_TEMPLATE = """
             <div class="status-item" id="last-update">
                 Last update: --
             </div>
+            <a href="#" class="header-link" onclick="showSettings(); return false;">Settings</a>
+            <a href="#" class="header-link" onclick="showAbout(); return false;">About</a>
         </div>
     </header>
 
@@ -670,14 +686,7 @@ HTML_TEMPLATE = """
     </main>
 
     <footer class="footer">
-        <p>Bluehood v0.3.0 - Bluetooth Neighborhood</p>
-        <p>
-            <a href="https://github.com/dannymcc/bluehood">GitHub</a>
-            <span style="margin: 0 0.5rem;">|</span>
-            <a href="#" onclick="showSettings(); return false;">Settings</a>
-            <span style="margin: 0 0.5rem;">|</span>
-            <a href="#" onclick="showAbout(); return false;">About</a>
-        </p>
+        <p>Bluehood v0.3.0 - Bluetooth Neighborhood | <a href="https://github.com/dannymcc/bluehood">GitHub</a></p>
     </footer>
 
     <!-- About Modal -->
@@ -1120,22 +1129,20 @@ HTML_TEMPLATE = """
             const lastTime = new Date(rssiData[rssiData.length - 1].timestamp);
             const formatTime = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-            container.innerHTML = \`
-                <svg viewBox="0 0 \${width} \${height}" preserveAspectRatio="none">
-                    <defs>
-                        <linearGradient id="rssiGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                            <stop offset="0%" style="stop-color: var(--accent-cyan); stop-opacity: 0.3"/>
-                            <stop offset="100%" style="stop-color: var(--accent-cyan); stop-opacity: 0.05"/>
-                        </linearGradient>
-                    </defs>
-                    <path class="rssi-area" d="\${areaPath}"/>
-                    <path class="rssi-line" d="\${linePath}"/>
-                    <text class="rssi-label" x="\${padding.left}" y="\${height - 2}">\${formatTime(firstTime)}</text>
-                    <text class="rssi-label" x="\${width - padding.right}" y="\${height - 2}" text-anchor="end">\${formatTime(lastTime)}</text>
-                    <text class="rssi-label" x="2" y="\${padding.top + 8}">\${maxRssi}dBm</text>
-                    <text class="rssi-label" x="2" y="\${height - padding.bottom - 2}">\${minRssi}dBm</text>
-                </svg>
-            \`;
+            container.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" preserveAspectRatio="none">' +
+                '<defs>' +
+                '<linearGradient id="rssiGradient" x1="0%" y1="0%" x2="0%" y2="100%">' +
+                '<stop offset="0%" style="stop-color: var(--accent-cyan); stop-opacity: 0.3"/>' +
+                '<stop offset="100%" style="stop-color: var(--accent-cyan); stop-opacity: 0.05"/>' +
+                '</linearGradient>' +
+                '</defs>' +
+                '<path class="rssi-area" d="' + areaPath + '"/>' +
+                '<path class="rssi-line" d="' + linePath + '"/>' +
+                '<text class="rssi-label" x="' + padding.left + '" y="' + (height - 2) + '">' + formatTime(firstTime) + '</text>' +
+                '<text class="rssi-label" x="' + (width - padding.right) + '" y="' + (height - 2) + '" text-anchor="end">' + formatTime(lastTime) + '</text>' +
+                '<text class="rssi-label" x="2" y="' + (padding.top + 8) + '">' + maxRssi + 'dBm</text>' +
+                '<text class="rssi-label" x="2" y="' + (height - padding.bottom - 2) + '">' + minRssi + 'dBm</text>' +
+                '</svg>';
         }
 
         async function toggleWatch(mac) {
