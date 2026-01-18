@@ -617,8 +617,8 @@ HTML_TEMPLATE = """
             <div class="status-item" id="last-update">
                 Last update: --
             </div>
-            <a href="#" class="header-link" onclick="showSettings(); return false;">Settings</a>
-            <a href="#" class="header-link" onclick="showAbout(); return false;">About</a>
+            <a href="/settings" class="header-link">Settings</a>
+            <a href="/about" class="header-link">About</a>
         </div>
     </header>
 
@@ -688,100 +688,6 @@ HTML_TEMPLATE = """
     <footer class="footer">
         <p>Bluehood v0.3.0 - Bluetooth Neighborhood | <a href="https://github.com/dannymcc/bluehood">GitHub</a></p>
     </footer>
-
-    <!-- About Modal -->
-    <div class="modal-overlay" id="about-modal">
-        <div class="modal" style="max-width: 600px;">
-            <div class="modal-header">
-                <div class="modal-title">About Bluehood</div>
-                <button class="modal-close" onclick="closeAbout()">&times;</button>
-            </div>
-            <div class="modal-body" style="line-height: 1.7;">
-                <p style="margin-bottom: 1rem;">
-                    This project was inspired by the <a href="https://whisperpair.eu/" target="_blank">WhisperPair vulnerability</a>
-                    (<a href="https://nvd.nist.gov/vuln/detail/CVE-2025-36911" target="_blank">CVE-2025-36911</a>),
-                    which highlighted privacy risks in Bluetooth devices.
-                </p>
-                <p style="margin-bottom: 1rem;">
-                    Thousands of Bluetooth devices surround us: phones, cars, TVs, headphones, hearing aids, delivery vehicles.
-                    Bluehood demonstrates how simple it is to passively detect these devices and observe patterns in their presence.
-                </p>
-                <p style="margin-bottom: 1rem;">
-                    With enough data, you could potentially understand daily routines, detect visitors,
-                    or identify patterns based on device presence. This metadata can reveal surprisingly
-                    personal information without any active interaction.
-                </p>
-                <p style="color: var(--text-muted); font-size: 0.9rem;">
-                    Bluehood is an educational tool to raise awareness about Bluetooth privacy.
-                </p>
-            </div>
-        </div>
-    </div>
-
-    <!-- Settings Modal -->
-    <div class="modal-overlay" id="settings-modal">
-        <div class="modal" style="max-width: 550px;">
-            <div class="modal-header">
-                <div class="modal-title">Settings</div>
-                <button class="modal-close" onclick="closeSettings()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <div style="margin-bottom: 1.5rem;">
-                    <h3 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Push Notifications (ntfy.sh)</h3>
-
-                    <div class="detail-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
-                        <label style="font-size: 0.85rem;">ntfy.sh Topic</label>
-                        <input type="text" id="settings-ntfy-topic" class="search-input" style="width: 100%;"
-                            placeholder="your-topic-name (e.g., bluehood-alerts)">
-                        <span style="font-size: 0.75rem; color: var(--text-muted);">
-                            Create a topic at <a href="https://ntfy.sh" target="_blank">ntfy.sh</a> and enter it here
-                        </span>
-                    </div>
-
-                    <div class="detail-row" style="justify-content: flex-start; gap: 1rem; padding: 0.5rem 0;">
-                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                            <input type="checkbox" id="settings-ntfy-enabled"> Enable notifications
-                        </label>
-                    </div>
-                </div>
-
-                <div style="margin-bottom: 1.5rem;">
-                    <h3 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Notification Triggers</h3>
-
-                    <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                            <input type="checkbox" id="settings-notify-new"> New device detected
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                            <input type="checkbox" id="settings-notify-return"> Watched device returns
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                            <input type="checkbox" id="settings-notify-leave"> Watched device leaves
-                        </label>
-                    </div>
-                </div>
-
-                <div style="margin-bottom: 1.5rem;">
-                    <h3 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">Thresholds</h3>
-
-                    <div class="detail-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
-                        <label style="font-size: 0.85rem;">Absence threshold (minutes before "left")</label>
-                        <input type="number" id="settings-absence-minutes" class="search-input" style="width: 100px;" value="30" min="1">
-                    </div>
-
-                    <div class="detail-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
-                        <label style="font-size: 0.85rem;">Return threshold (minutes absent before "returned")</label>
-                        <input type="number" id="settings-return-minutes" class="search-input" style="width: 100px;" value="5" min="1">
-                    </div>
-                </div>
-
-                <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
-                    <button class="btn" onclick="closeSettings()">Cancel</button>
-                    <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
-                </div>
-            </div>
-        </div>
-    </div>
 
     <!-- Device Detail Modal -->
     <div class="modal-overlay" id="device-modal">
@@ -1177,68 +1083,6 @@ HTML_TEMPLATE = """
             document.getElementById('device-modal').classList.remove('active');
         }
 
-        function showAbout() {
-            document.getElementById('about-modal').classList.add('active');
-        }
-
-        function closeAbout() {
-            document.getElementById('about-modal').classList.remove('active');
-        }
-
-        async function showSettings() {
-            // Load current settings
-            try {
-                const response = await fetch('/api/settings');
-                const settings = await response.json();
-
-                document.getElementById('settings-ntfy-topic').value = settings.ntfy_topic || '';
-                document.getElementById('settings-ntfy-enabled').checked = settings.ntfy_enabled;
-                document.getElementById('settings-notify-new').checked = settings.notify_new_device;
-                document.getElementById('settings-notify-return').checked = settings.notify_watched_return;
-                document.getElementById('settings-notify-leave').checked = settings.notify_watched_leave;
-                document.getElementById('settings-absence-minutes').value = settings.watched_absence_minutes;
-                document.getElementById('settings-return-minutes').value = settings.watched_return_minutes;
-            } catch (error) {
-                console.error('Error loading settings:', error);
-            }
-
-            document.getElementById('settings-modal').classList.add('active');
-        }
-
-        function closeSettings() {
-            document.getElementById('settings-modal').classList.remove('active');
-        }
-
-        async function saveSettings() {
-            const settings = {
-                ntfy_topic: document.getElementById('settings-ntfy-topic').value,
-                ntfy_enabled: document.getElementById('settings-ntfy-enabled').checked,
-                notify_new_device: document.getElementById('settings-notify-new').checked,
-                notify_watched_return: document.getElementById('settings-notify-return').checked,
-                notify_watched_leave: document.getElementById('settings-notify-leave').checked,
-                watched_absence_minutes: parseInt(document.getElementById('settings-absence-minutes').value) || 30,
-                watched_return_minutes: parseInt(document.getElementById('settings-return-minutes').value) || 5,
-            };
-
-            try {
-                const response = await fetch('/api/settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(settings),
-                });
-
-                if (response.ok) {
-                    closeSettings();
-                } else {
-                    const error = await response.json();
-                    alert('Error saving settings: ' + (error.error || 'Unknown error'));
-                }
-            } catch (error) {
-                console.error('Error saving settings:', error);
-                alert('Error saving settings');
-            }
-        }
-
         function exportData() {
             const csv = ['MAC,Vendor,Name,Type,Sightings,Last Seen'];
             allDevices.forEach(d => {
@@ -1270,17 +1114,696 @@ HTML_TEMPLATE = """
         document.getElementById('device-modal').addEventListener('click', (e) => {
             if (e.target.id === 'device-modal') closeModal();
         });
-        document.getElementById('about-modal').addEventListener('click', (e) => {
-            if (e.target.id === 'about-modal') closeAbout();
-        });
-        document.getElementById('settings-modal').addEventListener('click', (e) => {
-            if (e.target.id === 'settings-modal') closeSettings();
-        });
 
         // Initial load and auto-refresh
         refreshDevices();
         setInterval(refreshDevices, 10000);
     </script>
+</body>
+</html>
+"""
+
+SETTINGS_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - Bluehood</title>
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a25;
+            --bg-hover: #22222f;
+            --text-primary: #e4e4e7;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent-blue: #3b82f6;
+            --accent-cyan: #06b6d4;
+            --accent-green: #22c55e;
+            --accent-yellow: #eab308;
+            --accent-red: #ef4444;
+            --border-color: #27272a;
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        .logo-text {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .logo-text span { color: var(--accent-cyan); }
+
+        .header-nav {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .header-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            transition: all 0.15s ease;
+        }
+
+        .header-link:hover, .header-link.active {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+        }
+
+        .main {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .page-title {
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .page-desc {
+            color: var(--text-muted);
+            margin-bottom: 2rem;
+        }
+
+        .section {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .section-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--text-primary);
+        }
+
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            font-size: 0.875rem;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .form-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 0.5rem;
+        }
+
+        .form-checkbox input {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--accent-blue);
+        }
+
+        .form-checkbox-label {
+            font-size: 0.875rem;
+        }
+
+        .form-checkbox-desc {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            transition: all 0.15s ease;
+        }
+
+        .btn:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+
+        .btn-primary {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+
+        .status-msg {
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+            display: none;
+        }
+
+        .status-msg.success {
+            background: rgba(34, 197, 94, 0.1);
+            color: var(--accent-green);
+            display: block;
+        }
+
+        .status-msg.error {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--accent-red);
+            display: block;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .footer a {
+            color: var(--accent-cyan);
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <a href="/" class="logo">
+            <div class="logo-icon">B</div>
+            <div class="logo-text">Blue<span>hood</span></div>
+        </a>
+        <nav class="header-nav">
+            <a href="/" class="header-link">Dashboard</a>
+            <a href="/settings" class="header-link active">Settings</a>
+            <a href="/about" class="header-link">About</a>
+        </nav>
+    </header>
+
+    <main class="main">
+        <h1 class="page-title">Settings</h1>
+        <p class="page-desc">Configure notifications and preferences.</p>
+
+        <div id="status-msg" class="status-msg"></div>
+
+        <form id="settings-form">
+            <div class="section">
+                <h2 class="section-title">Push Notifications (ntfy.sh)</h2>
+
+                <div class="form-group">
+                    <label class="form-label">ntfy Topic Name</label>
+                    <input type="text" class="form-input" id="ntfy_topic" placeholder="e.g., bluehood-myname-alerts">
+                </div>
+
+                <label class="form-checkbox">
+                    <input type="checkbox" id="ntfy_enabled">
+                    <div>
+                        <div class="form-checkbox-label">Enable Notifications</div>
+                        <div class="form-checkbox-desc">Send push notifications via ntfy.sh</div>
+                    </div>
+                </label>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Notification Triggers</h2>
+
+                <label class="form-checkbox">
+                    <input type="checkbox" id="notify_new_device">
+                    <div>
+                        <div class="form-checkbox-label">New Device Detected</div>
+                        <div class="form-checkbox-desc">Notify when a new device is first seen</div>
+                    </div>
+                </label>
+
+                <label class="form-checkbox">
+                    <input type="checkbox" id="notify_watched_return">
+                    <div>
+                        <div class="form-checkbox-label">Watched Device Returns</div>
+                        <div class="form-checkbox-desc">Notify when a watched device comes back</div>
+                    </div>
+                </label>
+
+                <label class="form-checkbox">
+                    <input type="checkbox" id="notify_watched_leave">
+                    <div>
+                        <div class="form-checkbox-label">Watched Device Leaves</div>
+                        <div class="form-checkbox-desc">Notify when a watched device is no longer detected</div>
+                    </div>
+                </label>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">Timing Thresholds</h2>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Absence Threshold (minutes)</label>
+                        <input type="number" class="form-input" id="watched_absence_minutes" value="30" min="1" max="1440">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Return Threshold (minutes)</label>
+                        <input type="number" class="form-input" id="watched_return_minutes" value="5" min="1" max="60">
+                    </div>
+                </div>
+            </div>
+
+            <div class="btn-row">
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+                <a href="/" class="btn">Cancel</a>
+            </div>
+        </form>
+    </main>
+
+    <footer class="footer">
+        <p>Bluehood v0.3.0 | <a href="https://github.com/dannymcc/bluehood">GitHub</a></p>
+    </footer>
+
+    <script>
+        async function loadSettings() {
+            try {
+                const response = await fetch('/api/settings');
+                const data = await response.json();
+
+                document.getElementById('ntfy_topic').value = data.ntfy_topic || '';
+                document.getElementById('ntfy_enabled').checked = data.ntfy_enabled;
+                document.getElementById('notify_new_device').checked = data.notify_new_device;
+                document.getElementById('notify_watched_return').checked = data.notify_watched_return;
+                document.getElementById('notify_watched_leave').checked = data.notify_watched_leave;
+                document.getElementById('watched_absence_minutes').value = data.watched_absence_minutes;
+                document.getElementById('watched_return_minutes').value = data.watched_return_minutes;
+            } catch (error) {
+                console.error('Error loading settings:', error);
+                showStatus('Error loading settings', 'error');
+            }
+        }
+
+        async function saveSettings(e) {
+            e.preventDefault();
+
+            const settings = {
+                ntfy_topic: document.getElementById('ntfy_topic').value,
+                ntfy_enabled: document.getElementById('ntfy_enabled').checked,
+                notify_new_device: document.getElementById('notify_new_device').checked,
+                notify_watched_return: document.getElementById('notify_watched_return').checked,
+                notify_watched_leave: document.getElementById('notify_watched_leave').checked,
+                watched_absence_minutes: parseInt(document.getElementById('watched_absence_minutes').value),
+                watched_return_minutes: parseInt(document.getElementById('watched_return_minutes').value),
+            };
+
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+
+                if (response.ok) {
+                    showStatus('Settings saved successfully!', 'success');
+                } else {
+                    showStatus('Error saving settings', 'error');
+                }
+            } catch (error) {
+                console.error('Error saving settings:', error);
+                showStatus('Error saving settings', 'error');
+            }
+        }
+
+        function showStatus(message, type) {
+            const el = document.getElementById('status-msg');
+            el.textContent = message;
+            el.className = 'status-msg ' + type;
+
+            if (type === 'success') {
+                setTimeout(() => { el.className = 'status-msg'; }, 3000);
+            }
+        }
+
+        document.getElementById('settings-form').addEventListener('submit', saveSettings);
+        loadSettings();
+    </script>
+</body>
+</html>
+"""
+
+ABOUT_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>About - Bluehood</title>
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a25;
+            --text-primary: #e4e4e7;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent-blue: #3b82f6;
+            --accent-cyan: #06b6d4;
+            --border-color: #27272a;
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        .logo-text {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .logo-text span { color: var(--accent-cyan); }
+
+        .header-nav {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .header-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.875rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            transition: all 0.15s ease;
+        }
+
+        .header-link:hover, .header-link.active {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+        }
+
+        .main {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .hero {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+
+        .hero-icon {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+            border-radius: 20px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .hero-title {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .hero-title span { color: var(--accent-cyan); }
+
+        .hero-tagline {
+            font-size: 1.25rem;
+            color: var(--text-secondary);
+        }
+
+        .section {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .section-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--accent-cyan);
+        }
+
+        .section p {
+            color: var(--text-secondary);
+            line-height: 1.7;
+            margin-bottom: 1rem;
+        }
+
+        .section p:last-child { margin-bottom: 0; }
+
+        .section a {
+            color: var(--accent-cyan);
+            text-decoration: none;
+        }
+
+        .section a:hover { text-decoration: underline; }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .feature {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1rem;
+        }
+
+        .feature-icon {
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .feature-name {
+            font-weight: 600;
+            font-size: 0.875rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .feature-desc {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .version {
+            text-align: center;
+            padding: 1.5rem;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            font-size: 0.875rem;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .footer a {
+            color: var(--accent-cyan);
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <a href="/" class="logo">
+            <div class="logo-icon">B</div>
+            <div class="logo-text">Blue<span>hood</span></div>
+        </a>
+        <nav class="header-nav">
+            <a href="/" class="header-link">Dashboard</a>
+            <a href="/settings" class="header-link">Settings</a>
+            <a href="/about" class="header-link active">About</a>
+        </nav>
+    </header>
+
+    <main class="main">
+        <div class="hero">
+            <div class="hero-icon">B</div>
+            <h1 class="hero-title">Blue<span>hood</span></h1>
+            <p class="hero-tagline">Bluetooth Neighborhood Monitor</p>
+        </div>
+
+        <div class="section">
+            <h2 class="section-title">What is Bluehood?</h2>
+            <p>Bluehood is an educational tool that passively scans for Bluetooth devices in your area. It demonstrates how easily Bluetooth metadata can be collected and analyzed to reveal patterns in device presence.</p>
+            <p>Inspired by the <a href="https://whisperpair.eu/">WhisperPair vulnerability</a> (CVE-2025-36911), Bluehood aims to raise awareness about Bluetooth privacy.</p>
+        </div>
+
+        <div class="section">
+            <h2 class="section-title">Features</h2>
+            <div class="feature-grid">
+                <div class="feature">
+                    <div class="feature-icon">📡</div>
+                    <div class="feature-name">Dual-Mode Scanning</div>
+                    <div class="feature-desc">Scans both BLE and Classic Bluetooth</div>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">🏭</div>
+                    <div class="feature-name">Vendor Detection</div>
+                    <div class="feature-desc">Identifies device manufacturers</div>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">📊</div>
+                    <div class="feature-name">Pattern Analysis</div>
+                    <div class="feature-desc">Hourly and daily activity heatmaps</div>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">🔔</div>
+                    <div class="feature-name">Push Notifications</div>
+                    <div class="feature-desc">Alerts via ntfy.sh</div>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">⭐</div>
+                    <div class="feature-name">Watch List</div>
+                    <div class="feature-desc">Track specific devices</div>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">🔒</div>
+                    <div class="feature-name">Privacy Filter</div>
+                    <div class="feature-desc">Hides randomized MACs</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2 class="section-title">Disclaimer</h2>
+            <p>This tool is for educational purposes only. Be mindful of privacy laws in your jurisdiction when monitoring Bluetooth devices. The author is not responsible for any misuse of this software.</p>
+        </div>
+
+        <div class="version">v0.3.0</div>
+    </main>
+
+    <footer class="footer">
+        <p>Created by <a href="https://github.com/dannymcc">Danny McClelland</a> | <a href="https://github.com/dannymcc/bluehood">GitHub</a></p>
+    </footer>
 </body>
 </html>
 """
@@ -1298,6 +1821,8 @@ class WebServer:
 
     def _setup_routes(self):
         self.app.router.add_get("/", self.index)
+        self.app.router.add_get("/settings", self.settings_page)
+        self.app.router.add_get("/about", self.about_page)
         self.app.router.add_get("/api/devices", self.api_devices)
         self.app.router.add_get("/api/device/{mac}", self.api_device)
         self.app.router.add_post("/api/device/{mac}/watch", self.api_toggle_watch)
@@ -1318,6 +1843,14 @@ class WebServer:
     async def index(self, request: web.Request) -> web.Response:
         """Serve the main dashboard."""
         return web.Response(text=HTML_TEMPLATE, content_type="text/html")
+
+    async def settings_page(self, request: web.Request) -> web.Response:
+        """Serve the settings page."""
+        return web.Response(text=SETTINGS_TEMPLATE, content_type="text/html")
+
+    async def about_page(self, request: web.Request) -> web.Response:
+        """Serve the about page."""
+        return web.Response(text=ABOUT_TEMPLATE, content_type="text/html")
 
     async def api_devices(self, request: web.Request) -> web.Response:
         """Get all devices with stats."""
