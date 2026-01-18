@@ -1,8 +1,10 @@
 """Bluehood Web GUI - Modern dashboard interface."""
 
 import asyncio
+import hashlib
 import json
 import logging
+import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -796,10 +798,41 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <!-- Shortcuts Modal -->
+    <div class="modal-overlay" id="shortcuts-modal">
+        <div class="modal" style="max-width: 400px;">
+            <div class="modal-header">
+                <span class="modal-title">Keyboard Shortcuts</span>
+                <button class="modal-close" onclick="closeShortcutsModal()">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 1rem;">
+                <div style="display: grid; gap: 0.5rem;">
+                    <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color);"><span class="kbd">/</span><span style="color: var(--text-secondary);">Focus search</span></div>
+                    <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color);"><span class="kbd">r</span><span style="color: var(--text-secondary);">Refresh devices</span></div>
+                    <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color);"><span class="kbd">Esc</span><span style="color: var(--text-secondary);">Close modal</span></div>
+                    <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color);"><span class="kbd">w</span><span style="color: var(--text-secondary);">Toggle watch (in modal)</span></div>
+                    <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color);"><span class="kbd">1</span><span style="color: var(--text-secondary);">Show all devices</span></div>
+                    <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color);"><span class="kbd">2</span><span style="color: var(--text-secondary);">Show watched only</span></div>
+                    <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color);"><span class="kbd">3</span><span style="color: var(--text-secondary);">Filter phones</span></div>
+                    <div style="display: flex; justify-content: space-between; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color);"><span class="kbd">4</span><span style="color: var(--text-secondary);">Filter laptops</span></div>
+                    <div style="display: flex; justify-content: space-between; padding: 0.4rem 0;"><span class="kbd">5</span><span style="color: var(--text-secondary);">Filter audio</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let allDevices = [];
         let currentFilter = 'all';
         let dateFilteredDevices = null;
+
+        function showShortcutsModal() {
+            document.getElementById('shortcuts-modal').classList.add('active');
+        }
+
+        function closeShortcutsModal() {
+            document.getElementById('shortcuts-modal').classList.remove('active');
+        }
 
         async function refreshDevices() {
             try {
@@ -1027,13 +1060,17 @@ HTML_TEMPLATE = """
                     return;
                 }
                 container.innerHTML = data.correlated_devices.slice(0, 5).map(c => {
-                    const name = c.friendly_name || c.vendor || c.mac.substring(0, 8);
+                    const primaryName = c.friendly_name || c.vendor || 'Unknown';
+                    const secondaryInfo = c.friendly_name ? (c.vendor || c.mac) : c.mac;
                     const corrBar = '<div style="background: var(--accent-red); height: 4px; width: ' + c.correlation_score + '%; border-radius: 2px;"></div>';
-                    return '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color);">' +
-                        '<span style="font-size: 0.75rem;">' + name + '</span>' +
-                        '<div style="display: flex; align-items: center; gap: 0.5rem;">' +
-                        '<div style="width: 60px;">' + corrBar + '</div>' +
-                        '<span style="font-size: 0.7rem; color: var(--text-muted);">' + c.correlation_score + '%</span>' +
+                    return '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); cursor: pointer;" onclick="openDeviceModal(\\'' + c.mac + '\\')">' +
+                        '<div style="flex: 1; min-width: 0;">' +
+                        '<div style="font-size: 0.8rem; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + primaryName + '</div>' +
+                        '<div style="font-size: 0.65rem; color: var(--text-muted); font-family: var(--font-mono);">' + secondaryInfo + '</div>' +
+                        '</div>' +
+                        '<div style="display: flex; align-items: center; gap: 0.5rem; margin-left: 0.5rem;">' +
+                        '<div style="width: 50px;">' + corrBar + '</div>' +
+                        '<span style="font-size: 0.7rem; color: var(--accent-amber); min-width: 32px; text-align: right;">' + c.correlation_score + '%</span>' +
                         '</div></div>';
                 }).join('');
             } catch (error) {
@@ -1158,6 +1195,7 @@ HTML_TEMPLATE = """
 
         document.getElementById('search').addEventListener('input', renderDevices);
         document.getElementById('device-modal').addEventListener('click', (e) => { if (e.target.id === 'device-modal') closeModal(); });
+        document.getElementById('shortcuts-modal').addEventListener('click', (e) => { if (e.target.id === 'shortcuts-modal') closeShortcutsModal(); });
 
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
@@ -1168,6 +1206,7 @@ HTML_TEMPLATE = """
 
             if (e.key === 'Escape') {
                 closeModal();
+                closeShortcutsModal();
             } else if (e.key === 'r' || e.key === 'R') {
                 // Refresh
                 refreshDevices();
@@ -1189,7 +1228,7 @@ HTML_TEMPLATE = """
             } else if (e.key === '5') {
                 document.querySelector('[data-filter="audio"]').click();
             } else if (e.key === '?') {
-                alert('Keyboard Shortcuts:\\n\\n/ - Focus search\\nr - Refresh\\nEsc - Close modal\\nw - Toggle watch (in modal)\\n1-5 - Filter by type');
+                showShortcutsModal();
             }
         });
 
@@ -1357,6 +1396,33 @@ SETTINGS_TEMPLATE = """
                 <a href="/" class="btn">Cancel</a>
             </div>
         </form>
+
+        <div class="panel" style="margin-top: 2rem;">
+            <div class="panel-header">Access Control</div>
+            <div class="panel-body">
+                <label class="form-check">
+                    <input type="checkbox" id="auth_enabled">
+                    <div>
+                        <div class="form-check-label">Enable Authentication</div>
+                        <div class="form-check-desc">Require login to access the dashboard</div>
+                    </div>
+                </label>
+                <div id="auth-fields" style="display: none; margin-top: 1rem;">
+                    <div class="form-group">
+                        <label class="form-label">Username</label>
+                        <input type="text" class="form-input" id="auth_username" autocomplete="username">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Password</label>
+                        <input type="password" class="form-input" id="auth_password" autocomplete="new-password" placeholder="Enter new password">
+                    </div>
+                </div>
+                <div class="btn-row" style="margin-top: 1rem;">
+                    <button type="button" class="btn btn-primary" onclick="saveAuthSettings()">Update Access Control</button>
+                    <button type="button" class="btn" onclick="logout()" id="logout-btn" style="display: none;">Logout</button>
+                </div>
+            </div>
+        </div>
     </main>
 
     <footer class="footer">BLUEHOOD v0.5.0 // <a href="https://github.com/dannymcc/bluehood">Source</a></footer>
@@ -1401,8 +1467,58 @@ SETTINGS_TEMPLATE = """
             if (type === 'success') setTimeout(() => { el.className = 'status-msg'; }, 3000);
         }
 
+        async function loadAuthStatus() {
+            try {
+                const response = await fetch('/api/auth/status');
+                const data = await response.json();
+                document.getElementById('auth_enabled').checked = data.auth_enabled;
+                document.getElementById('auth_username').value = data.username || '';
+                document.getElementById('auth-fields').style.display = data.auth_enabled ? 'block' : 'none';
+                document.getElementById('logout-btn').style.display = data.authenticated && data.auth_enabled ? 'inline-block' : 'none';
+            } catch (error) { console.error('Error loading auth status'); }
+        }
+
+        document.getElementById('auth_enabled').addEventListener('change', (e) => {
+            document.getElementById('auth-fields').style.display = e.target.checked ? 'block' : 'none';
+        });
+
+        async function saveAuthSettings() {
+            const enabled = document.getElementById('auth_enabled').checked;
+            const username = document.getElementById('auth_username').value;
+            const password = document.getElementById('auth_password').value;
+
+            if (enabled && (!username || !password)) {
+                showStatus('Username and password required', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/auth/setup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled, username, password })
+                });
+                if (response.ok) {
+                    showStatus('Access control updated', 'success');
+                    document.getElementById('auth_password').value = '';
+                    loadAuthStatus();
+                } else {
+                    const data = await response.json();
+                    showStatus(data.error || 'Error updating access control', 'error');
+                }
+            } catch (error) { showStatus('Error updating access control', 'error'); }
+        }
+
+        async function logout() {
+            try {
+                await fetch('/api/auth/logout', { method: 'POST' });
+                window.location.href = '/login';
+            } catch (error) { console.error('Logout error'); }
+        }
+
         document.getElementById('settings-form').addEventListener('submit', saveSettings);
         loadSettings();
+        loadAuthStatus();
     </script>
 </body>
 </html>
@@ -1558,6 +1674,118 @@ ABOUT_TEMPLATE = """
 </html>
 """
 
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BLUEHOOD // Authentication Required</title>
+    <style>
+        :root {
+            --bg-primary: #0d0d0d;
+            --bg-secondary: #141414;
+            --bg-tertiary: #1a1a1a;
+            --text-primary: #e0e0e0;
+            --text-secondary: #888888;
+            --text-muted: #555555;
+            --accent-red: #dc2626;
+            --border-color: #2a2a2a;
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: var(--font-mono); background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+
+        .login-container { width: 100%; max-width: 380px; padding: 1rem; }
+
+        .login-box { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 4px; padding: 2rem; }
+
+        .login-header { text-align: center; margin-bottom: 2rem; }
+        .login-icon { color: var(--accent-red); font-size: 2rem; margin-bottom: 0.75rem; }
+        .login-title { font-size: 1.25rem; font-weight: 700; letter-spacing: 0.1em; }
+        .login-title span { color: var(--accent-red); }
+        .login-subtitle { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.15em; margin-top: 0.5rem; }
+
+        .form-group { margin-bottom: 1rem; }
+        .form-label { display: block; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 0.5rem; }
+        .form-input { width: 100%; padding: 0.75rem; border: 1px solid var(--border-color); border-radius: 3px; background: var(--bg-tertiary); color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9rem; }
+        .form-input:focus { outline: none; border-color: var(--accent-red); }
+
+        .btn { width: 100%; padding: 0.75rem; border: none; border-radius: 3px; background: var(--accent-red); color: white; font-family: var(--font-mono); font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; cursor: pointer; transition: background 0.1s; }
+        .btn:hover { background: #b91c1c; }
+
+        .error-msg { background: rgba(220, 38, 38, 0.1); border: 1px solid var(--accent-red); border-radius: 3px; padding: 0.75rem; margin-bottom: 1rem; color: var(--accent-red); font-size: 0.8rem; text-align: center; display: none; }
+        .error-msg.show { display: block; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-box">
+            <div class="login-header">
+                <div class="login-icon">◉</div>
+                <h1 class="login-title">BLUE<span>HOOD</span></h1>
+                <p class="login-subtitle">Authentication Required</p>
+            </div>
+
+            <div class="error-msg" id="error-msg">Invalid credentials</div>
+
+            <form id="login-form">
+                <div class="form-group">
+                    <label class="form-label">Username</label>
+                    <input type="text" class="form-input" id="username" name="username" autocomplete="username" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Password</label>
+                    <input type="password" class="form-input" id="password" name="password" autocomplete="current-password" required>
+                </div>
+                <button type="submit" class="btn">Authenticate</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('login-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                if (response.ok) {
+                    window.location.href = '/';
+                } else {
+                    document.getElementById('error-msg').classList.add('show');
+                }
+            } catch (error) {
+                document.getElementById('error-msg').classList.add('show');
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+
+
+def hash_password(password: str) -> str:
+    """Hash a password using SHA-256 with salt."""
+    salt = secrets.token_hex(16)
+    hash_obj = hashlib.sha256((salt + password).encode())
+    return f"{salt}:{hash_obj.hexdigest()}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """Verify a password against a stored hash."""
+    if not stored_hash or ":" not in stored_hash:
+        return False
+    salt, hash_value = stored_hash.split(":", 1)
+    hash_obj = hashlib.sha256((salt + password).encode())
+    return hash_obj.hexdigest() == hash_value
+
 
 class WebServer:
     """Web server for Bluehood dashboard."""
@@ -1567,10 +1795,13 @@ class WebServer:
         self.port = port
         self.app = web.Application()
         self._notifications = notifications
+        self._sessions: dict[str, datetime] = {}  # session_token -> expiry
+        self._session_duration = timedelta(hours=24)
         self._setup_routes()
 
     def _setup_routes(self):
         self.app.router.add_get("/", self.index)
+        self.app.router.add_get("/login", self.login_page)
         self.app.router.add_get("/settings", self.settings_page)
         self.app.router.add_get("/about", self.about_page)
         self.app.router.add_get("/api/devices", self.api_devices)
@@ -1593,17 +1824,66 @@ class WebServer:
         self.app.router.add_post("/api/groups", self.api_create_group)
         self.app.router.add_put("/api/groups/{group_id}", self.api_update_group)
         self.app.router.add_delete("/api/groups/{group_id}", self.api_delete_group)
+        # Authentication
+        self.app.router.add_post("/api/auth/login", self.api_login)
+        self.app.router.add_post("/api/auth/logout", self.api_logout)
+        self.app.router.add_get("/api/auth/status", self.api_auth_status)
+        self.app.router.add_post("/api/auth/setup", self.api_auth_setup)
+
+    def _create_session(self) -> str:
+        """Create a new session token."""
+        token = secrets.token_urlsafe(32)
+        self._sessions[token] = datetime.now() + self._session_duration
+        return token
+
+    def _validate_session(self, token: str) -> bool:
+        """Check if a session token is valid."""
+        if not token or token not in self._sessions:
+            return False
+        if datetime.now() > self._sessions[token]:
+            del self._sessions[token]
+            return False
+        return True
+
+    async def _check_auth(self, request: web.Request) -> bool:
+        """Check if request is authenticated (when auth is enabled)."""
+        settings = await db.get_settings()
+        if not settings.auth_enabled:
+            return True  # Auth disabled, allow all
+
+        token = request.cookies.get("session")
+        return self._validate_session(token)
+
+    async def _require_auth(self, request: web.Request) -> Optional[web.Response]:
+        """Return a redirect response if auth is required but not present."""
+        if not await self._check_auth(request):
+            if request.path.startswith("/api/"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+            raise web.HTTPFound("/login")
+        return None
 
     async def index(self, request: web.Request) -> web.Response:
         """Serve the main dashboard."""
+        await self._require_auth(request)
         return web.Response(text=HTML_TEMPLATE, content_type="text/html")
+
+    async def login_page(self, request: web.Request) -> web.Response:
+        """Serve the login page."""
+        # If already authenticated, redirect to home
+        if await self._check_auth(request):
+            settings = await db.get_settings()
+            if settings.auth_enabled:
+                raise web.HTTPFound("/")
+        return web.Response(text=LOGIN_TEMPLATE, content_type="text/html")
 
     async def settings_page(self, request: web.Request) -> web.Response:
         """Serve the settings page."""
+        await self._require_auth(request)
         return web.Response(text=SETTINGS_TEMPLATE, content_type="text/html")
 
     async def about_page(self, request: web.Request) -> web.Response:
         """Serve the about page."""
+        await self._require_auth(request)
         return web.Response(text=ABOUT_TEMPLATE, content_type="text/html")
 
     async def api_devices(self, request: web.Request) -> web.Response:
@@ -2026,6 +2306,96 @@ class WebServer:
             group_id = int(request.match_info["group_id"])
             await db.delete_group(group_id)
             return web.json_response({"status": "ok"})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    # ========================================================================
+    # Authentication API
+    # ========================================================================
+
+    async def api_login(self, request: web.Request) -> web.Response:
+        """Handle login request."""
+        try:
+            data = await request.json()
+            username = data.get("username", "")
+            password = data.get("password", "")
+
+            settings = await db.get_settings()
+
+            # Check if auth is enabled and credentials match
+            if not settings.auth_enabled:
+                return web.json_response({"error": "Auth not enabled"}, status=400)
+
+            if (username == settings.auth_username and
+                verify_password(password, settings.auth_password_hash)):
+                # Create session
+                token = self._create_session()
+                response = web.json_response({"status": "ok"})
+                response.set_cookie(
+                    "session", token,
+                    max_age=int(self._session_duration.total_seconds()),
+                    httponly=True,
+                    samesite="Lax"
+                )
+                return response
+            else:
+                return web.json_response({"error": "Invalid credentials"}, status=401)
+
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    async def api_logout(self, request: web.Request) -> web.Response:
+        """Handle logout request."""
+        token = request.cookies.get("session")
+        if token and token in self._sessions:
+            del self._sessions[token]
+
+        response = web.json_response({"status": "ok"})
+        response.del_cookie("session")
+        return response
+
+    async def api_auth_status(self, request: web.Request) -> web.Response:
+        """Get authentication status."""
+        settings = await db.get_settings()
+        authenticated = await self._check_auth(request)
+
+        return web.json_response({
+            "auth_enabled": settings.auth_enabled,
+            "authenticated": authenticated,
+            "username": settings.auth_username if authenticated else None,
+        })
+
+    async def api_auth_setup(self, request: web.Request) -> web.Response:
+        """Setup or update authentication credentials."""
+        # Only allow if already authenticated or auth is disabled
+        settings = await db.get_settings()
+        if settings.auth_enabled and not await self._check_auth(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
+        try:
+            data = await request.json()
+            enabled = data.get("enabled", False)
+            username = data.get("username", "")
+            password = data.get("password", "")
+
+            if enabled:
+                if not username or not password:
+                    return web.json_response(
+                        {"error": "Username and password required"},
+                        status=400
+                    )
+                password_hash = hash_password(password)
+            else:
+                password_hash = None
+
+            await db.update_auth_settings(
+                enabled=enabled,
+                username=username if enabled else None,
+                password_hash=password_hash
+            )
+
+            return web.json_response({"status": "ok"})
+
         except Exception as e:
             return web.json_response({"error": str(e)}, status=400)
 

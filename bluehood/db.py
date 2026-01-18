@@ -61,6 +61,10 @@ class Settings:
     notify_watched_leave: bool = True
     watched_absence_minutes: int = 30  # Minutes before "left"
     watched_return_minutes: int = 5    # Minutes of absence before "return" triggers
+    # Authentication settings
+    auth_enabled: bool = False
+    auth_username: Optional[str] = None
+    auth_password_hash: Optional[str] = None  # bcrypt hash
 
 
 SCHEMA = """
@@ -516,6 +520,9 @@ async def get_settings() -> Settings:
         notify_watched_leave=settings_dict.get("notify_watched_leave", "1") == "1",
         watched_absence_minutes=int(settings_dict.get("watched_absence_minutes", "30")),
         watched_return_minutes=int(settings_dict.get("watched_return_minutes", "5")),
+        auth_enabled=settings_dict.get("auth_enabled", "0") == "1",
+        auth_username=settings_dict.get("auth_username"),
+        auth_password_hash=settings_dict.get("auth_password_hash"),
     )
 
 
@@ -545,6 +552,30 @@ async def update_settings(settings: Settings) -> None:
             await db.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                 (key, value)
+            )
+        await db.commit()
+
+
+async def update_auth_settings(
+    enabled: bool,
+    username: Optional[str] = None,
+    password_hash: Optional[str] = None
+) -> None:
+    """Update authentication settings."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            ("auth_enabled", "1" if enabled else "0")
+        )
+        if username is not None:
+            await db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                ("auth_username", username)
+            )
+        if password_hash is not None:
+            await db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                ("auth_password_hash", password_hash)
             )
         await db.commit()
 
