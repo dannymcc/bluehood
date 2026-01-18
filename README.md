@@ -12,6 +12,17 @@
 
 ---
 
+## Screenshots
+
+![Dashboard](screenshots/dashboard.png)
+*Main dashboard showing device list with filtering, search, and real-time statistics*
+
+![Settings](screenshots/settings.png)
+*Configuration page for push notifications and alert triggers*
+
+![About](screenshots/about.png)
+*Intel page with project information and capabilities overview*
+
 ## Why?
 
 This project was inspired by the [WhisperPair vulnerability](https://whisperpair.eu/) ([CVE-2025-36911](https://nvd.nist.gov/vuln/detail/CVE-2025-36911)), which highlighted privacy risks in Bluetooth devices.
@@ -36,6 +47,7 @@ Bluehood is a Bluetooth scanner that:
 - **Classifies devices** into categories (phones, audio, wearables, IoT, vehicles, etc.)
 - **Tracks presence patterns** over time with hourly/daily heatmaps
 - **Filters out noise** from randomized MAC addresses (privacy-rotated devices)
+- **Analyzes device correlations** to find devices that appear together
 - **Sends push notifications** when watched devices arrive or leave
 - **Provides a web dashboard** for monitoring and analysis
 
@@ -52,13 +64,17 @@ Bluehood is a Bluetooth scanner that:
 - Mark devices as "Watched" for tracking personal devices
 - Organize devices into custom groups
 - Set friendly names for known devices
+- Add custom notes/tags to any device
 - Device type detection (phones, audio, wearables, IoT, vehicles, etc.)
 
 ### Analytics
-- 30-day presence timeline visualization
-- Signal strength (RSSI) history chart
-- Hourly and daily activity heatmaps
-- Pattern analysis ("Weekdays, evenings 5PM-9PM")
+- **30-day presence timeline** visualization
+- **Signal strength (RSSI) history** chart with 7-day data
+- **Hourly and daily activity heatmaps** showing when devices are active
+- **Pattern analysis** ("Weekdays, evenings 5PM-9PM")
+- **Dwell time analysis** showing total time devices spend in range
+- **Device correlation** detection to find devices that appear together
+- **Proximity zones** (immediate, near, far, remote) based on signal strength
 - Search by MAC, vendor, or name
 - Date range search for historical queries
 
@@ -68,6 +84,14 @@ Bluehood is a Bluetooth scanner that:
 - Notify when watched devices return
 - Notify when watched devices leave
 - Configurable thresholds for arrival/departure
+
+### Web Interface
+- **Compact/Detailed view toggle** for different display preferences
+- **Screenshot mode** to obfuscate MACs and names for safe sharing
+- **Keyboard shortcuts** for power users (press `?` to view)
+- **CSV export** of device data
+- **Device groups** for organizing related devices
+- **Optional authentication** to secure access
 
 ## How?
 
@@ -166,13 +190,36 @@ The dashboard provides:
 - **Device filters** by type (phones, audio, IoT, etc.) and watched status
 - **Search** by MAC, vendor, or name
 - **Date range search** to find devices seen in a specific time window
-- **Settings** for configuring notifications and groups
+- **Settings** for configuring notifications, groups, and authentication
 - **Device details** modal with:
   - BLE service fingerprints
   - Hourly/daily activity heatmaps
   - 30-day presence timeline
   - Signal strength (RSSI) history chart
   - Pattern analysis
+  - Dwell time statistics
+  - Correlated devices list
+  - Proximity zone indicator
+  - Operator notes field
+  - Group assignment
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `/` | Focus search bar |
+| `r` | Refresh device list |
+| `c` | Toggle compact view |
+| `w` | Toggle watch on selected device |
+| `Esc` | Close modal |
+| `?` | Show keyboard shortcuts |
+
+### Screenshot Mode
+
+Enable screenshot mode from the sidebar to obfuscate sensitive data before sharing screenshots:
+- MAC addresses show only first 2 octets (e.g., `AA:BB:XX:XX:XX:XX`)
+- Friendly names show only first 2 characters (e.g., `Da********`)
+- CSV exports also respect screenshot mode
 
 ## Push Notifications
 
@@ -220,6 +267,25 @@ Bluehood analyzes sighting timestamps to detect patterns:
 - **Frequency**: Constant, Daily, Regular, Occasional, Rare
 
 Example patterns: "Daily, evenings (5PM-9PM)", "Weekdays, morning (8AM-12PM)"
+
+### Device Correlation
+
+Bluehood detects devices that frequently appear together within a configurable time window. This can reveal:
+- Devices owned by the same person (phone + smartwatch)
+- People who travel together
+- Devices that share a schedule
+
+### Proximity Zones
+
+Based on RSSI signal strength, devices are classified into proximity zones:
+- **Immediate** (> -50 dBm): Very close, within a few meters
+- **Near** (-50 to -60 dBm): Nearby, same room
+- **Far** (-60 to -70 dBm): Further away, adjacent rooms
+- **Remote** (< -70 dBm): Distant, at edge of detection range
+
+### Dwell Time Analysis
+
+Tracks how long devices spend in range by analyzing gaps between sightings. A configurable gap threshold (default 15 minutes) determines when a new "session" begins.
 
 ## Troubleshooting
 
