@@ -13,7 +13,7 @@ from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
 try:
-    from mac_vendor_lookup import AsyncMacLookup, MacLookup
+    from mac_vendor_lookup import AsyncMacLookup, MacLookup, BaseMacLookup
     HAS_MAC_LOOKUP = True
 except ImportError:
     HAS_MAC_LOOKUP = False
@@ -21,9 +21,13 @@ except ImportError:
 # Online API for vendor lookup fallback
 MACVENDORS_API_URL = "https://api.macvendors.com/"
 
-from .config import SCAN_DURATION, BLUETOOTH_ADAPTER
+from .config import SCAN_DURATION, BLUETOOTH_ADAPTER, DATA_DIR
 
 logger = logging.getLogger(__name__)
+
+# Configure mac-vendor-lookup to use BLUEHOOD_DATA_DIR for caching
+if HAS_MAC_LOOKUP:
+    BaseMacLookup.cache_path = str(DATA_DIR / "mac-vendors.txt")
 
 
 # Bluetooth device class codes for classification
