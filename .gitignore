@@ -28,3 +28,6 @@ ENV/
 *.sqlite
 *.sqlite3
 bluehood.db
+
+# Claude Code
+CLAUDE.md
