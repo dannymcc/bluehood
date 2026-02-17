@@ -23,6 +23,10 @@ RUN pip install --no-cache-dir -e .
 # Create data directory for database
 RUN mkdir -p /data && chown bluehood:bluehood /data
 
+# Create directory for mac addresses cache
+RUN mkdir -p /home/bluehood/.cache \
+    && chown bluehood:bluehood /home/bluehood/.cache
+
 # Environment variables
 ENV BLUEHOOD_DATA_DIR=/data
 ENV PYTHONUNBUFFERED=1
