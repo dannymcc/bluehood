@@ -334,6 +334,7 @@ Contributions welcome! Please open an issue or PR on GitHub.
 - [@martinh2011](https://github.com/martinh2011) (Martin Hüser) - MAC vendor cache improvements
 - [@hatedabamboo](https://github.com/hatedabamboo) (Kirill Solovei) - Light theme support
 - [@krnltrp](https://github.com/krnltrp) - Web UI enhancements
+- [@jacobpretorius](https://github.com/jacobpretorius) (Jacob Pretorius) - CSV export JS fix (#14)
 
 ## License
 
