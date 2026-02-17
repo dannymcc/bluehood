@@ -398,6 +398,12 @@ HTML_TEMPLATE = """
         .table-actions {
             display: flex;
             gap: 0.5rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .selected-summary {
+            color: var(--accent-amber);
         }
 
         .device-table {
@@ -417,6 +423,40 @@ HTML_TEMPLATE = """
             border-bottom: 1px solid var(--border-color);
         }
 
+        .device-table th.select-col,
+        .device-table td.select-col {
+            width: 34px;
+            padding: 0.4rem 0.5rem;
+            text-align: center;
+        }
+
+        .row-select-checkbox {
+            accent-color: var(--accent-red);
+            cursor: pointer;
+        }
+
+        .device-table th.sortable {
+            cursor: pointer;
+            user-select: none;
+            transition: color 0.1s ease, background 0.1s ease;
+        }
+
+        .device-table th.sortable:hover {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+        }
+
+        .device-table th.sortable.active {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+        }
+
+        .sort-indicator {
+            margin-left: 0.35rem;
+            font-size: 0.6rem;
+            opacity: 0.7;
+        }
+
         .device-table td {
             padding: 0.6rem 0.75rem;
             font-size: 0.8rem;
@@ -428,9 +468,23 @@ HTML_TEMPLATE = """
             background: var(--bg-hover);
         }
 
+        .device-table tr.selected {
+            background: rgba(220, 38, 38, 0.15);
+        }
+
+        .device-table tr.selected:hover {
+            background: rgba(220, 38, 38, 0.22);
+        }
+
         .device-table tr:last-child td { border-bottom: none; }
 
         .device-table tr { cursor: pointer; }
+
+        .bulk-select {
+            min-width: 140px;
+            font-size: 0.7rem;
+            padding: 0.4rem 0.5rem;
+        }
 
         /* Device Type Badge */
         .type-badge {
@@ -801,31 +855,45 @@ HTML_TEMPLATE = """
         <main class="content">
             <div class="search-bar">
                 <input type="text" class="search-input" id="search" placeholder="Search MAC, vendor, or identifier...">
-                <button class="btn" onclick="exportData()">Export CSV</button>
+                <button class="btn" id="export-btn" onclick="exportData()">Export CSV</button>
             </div>
 
             <div class="table-container">
                 <div class="table-header">
-                    <span class="table-title">Identified Targets</span>
+                    <span class="table-title">Identified Targets <span id="selected-count" class="selected-summary" style="display: none;">· 0 selected</span></span>
                     <div class="table-actions">
                         <span style="font-size: 0.7rem; color: var(--text-muted);">
                             <span id="visible-count">--</span> targets
                         </span>
+                        <select class="form-input bulk-select" id="bulk-group-select">
+                            <option value="">Assign group...</option>
+                        </select>
+                        <button class="btn" id="bulk-group-apply" onclick="applyBulkGroup()">Assign Group</button>
+                        <select class="form-input bulk-select" id="bulk-watch-select">
+                            <option value="">Watch...</option>
+                            <option value="on">Watch ON</option>
+                            <option value="off">Watch OFF</option>
+                        </select>
+                        <button class="btn" id="bulk-watch-apply" onclick="applyBulkWatch()">Apply Watch</button>
+                        <button class="btn" id="clear-selection-btn" onclick="clearSelection()">Clear Selection</button>
+                        <button class="btn" onclick="resetSort()">Reset Sort</button>
                     </div>
                 </div>
                 <table class="device-table">
                     <thead>
                         <tr>
-                            <th>Class</th>
-                            <th>MAC Address</th>
-                            <th>Vendor</th>
-                            <th>Identifier</th>
-                            <th>Sightings</th>
-                            <th>Last Contact</th>
+                            <th class="select-col"><input type="checkbox" id="select-all-checkbox" class="row-select-checkbox" aria-label="Select all rows"></th>
+                            <th class="sortable" data-sort="class">Class<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="mac">MAC Address<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="vendor">Vendor<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="identifier">Identifier<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="sightings">Sightings<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="last_seen">Last Contact<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="group">Group<span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody id="device-list">
-                        <tr><td colspan="6" style="text-align: center; padding: 2rem; color: var(--text-muted);">Initializing scanner...</td></tr>
+                        <tr><td colspan="8" style="text-align: center; padding: 2rem; color: var(--text-muted);">Initializing scanner...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -893,6 +961,11 @@ HTML_TEMPLATE = """
         let dateFilteredDevices = null;
         let compactView = localStorage.getItem('bluehood_compact_view') === 'true';
         let screenshotMode = localStorage.getItem('bluehood_screenshot_mode') === 'true';
+        const defaultSortState = { column: 'last_seen', direction: 'asc' };
+        let sortState = { ...defaultSortState };
+        let selectedMacs = new Set();
+        let lastSelectedIndex = null;
+        let currentVisibleDevices = [];
 
         function toggleViewMode() {
             compactView = !compactView;
@@ -954,9 +1027,12 @@ HTML_TEMPLATE = """
                 const response = await fetch('/api/devices');
                 const data = await response.json();
                 allDevices = data.devices || [];
+                const knownMacs = new Set(allDevices.map(d => d.mac));
+                selectedMacs = new Set([...selectedMacs].filter(mac => knownMacs.has(mac)));
                 updateStats(data);
                 updateFilterCounts();
                 if (!dateFilteredDevices) renderDevices();
+                updateSelectionUI();
                 document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
             } catch (error) {
                 console.error('Scan error:', error);
@@ -1009,6 +1085,200 @@ HTML_TEMPLATE = """
             renderDevices();
         }
 
+        function resetSort() {
+            sortState = { ...defaultSortState };
+            updateSortIndicators();
+            renderDevices();
+        }
+
+        function setSort(column) {
+            if (sortState.column === column) {
+                sortState.direction = sortState.direction === 'asc' ? 'desc' : 'asc';
+            } else {
+                sortState.column = column;
+                sortState.direction = 'asc';
+            }
+            updateSortIndicators();
+            renderDevices();
+        }
+
+        function updateSortIndicators() {
+            document.querySelectorAll('.device-table th.sortable').forEach(th => {
+                const indicator = th.querySelector('.sort-indicator');
+                if (!indicator) return;
+                const isActive = th.dataset.sort === sortState.column;
+                th.classList.toggle('active', isActive);
+                if (!isActive) {
+                    indicator.textContent = '';
+                } else {
+                    indicator.textContent = sortState.direction === 'asc' ? '▲' : '▼';
+                }
+            });
+        }
+
+        function getSortValue(device, column) {
+            switch (column) {
+                case 'class':
+                    return (device.type_label || device.device_type || '').toLowerCase();
+                case 'mac':
+                    return (device.mac || '').toLowerCase();
+                case 'vendor':
+                    return (device.vendor || '').toLowerCase();
+                case 'identifier':
+                    return (device.friendly_name || '').toLowerCase();
+                case 'sightings':
+                    return Number.isFinite(device.total_sightings) ? device.total_sightings : -1;
+                case 'last_seen': {
+                    if (!device.last_seen) return Number.POSITIVE_INFINITY;
+                    const last = new Date(device.last_seen);
+                    const now = new Date();
+                    return Math.max(0, now - last);
+                }
+                case 'group':
+                    return (device.group_name || '').toLowerCase();
+                default:
+                    return '';
+            }
+        }
+
+        function applySort(devices) {
+            const sorted = [...devices];
+            const direction = sortState.direction === 'asc' ? 1 : -1;
+            sorted.sort((a, b) => {
+                const aVal = getSortValue(a, sortState.column);
+                const bVal = getSortValue(b, sortState.column);
+                if (aVal < bVal) return -1 * direction;
+                if (aVal > bVal) return 1 * direction;
+                return 0;
+            });
+            return sorted;
+        }
+
+        function updateSelectionUI() {
+            const selectedCount = selectedMacs.size;
+            const summary = document.getElementById('selected-count');
+            if (summary) {
+                if (selectedCount > 0) {
+                    summary.style.display = 'inline';
+                    summary.textContent = '· ' + selectedCount + ' selected';
+                } else {
+                    summary.style.display = 'none';
+                    summary.textContent = '';
+                }
+            }
+
+            const exportBtn = document.getElementById('export-btn');
+            if (exportBtn) {
+                exportBtn.textContent = selectedCount > 0 ? 'EXPORT CSV (sel)' : 'Export CSV';
+            }
+
+            updateSelectAllCheckbox();
+            updateBulkActionState();
+        }
+
+        function updateSelectAllCheckbox() {
+            const checkbox = document.getElementById('select-all-checkbox');
+            if (!checkbox) return;
+            if (!currentVisibleDevices || currentVisibleDevices.length === 0) {
+                checkbox.checked = false;
+                checkbox.indeterminate = false;
+                checkbox.disabled = true;
+                return;
+            }
+            checkbox.disabled = false;
+            const selectedVisibleCount = currentVisibleDevices.filter(d => selectedMacs.has(d.mac)).length;
+            checkbox.checked = selectedVisibleCount > 0 && selectedVisibleCount === currentVisibleDevices.length;
+            checkbox.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < currentVisibleDevices.length;
+        }
+
+        function updateBulkActionState() {
+            const hasSelection = selectedMacs.size > 0;
+            const bulkGroupSelect = document.getElementById('bulk-group-select');
+            const bulkGroupApply = document.getElementById('bulk-group-apply');
+            const bulkWatchSelect = document.getElementById('bulk-watch-select');
+            const bulkWatchApply = document.getElementById('bulk-watch-apply');
+            const clearBtn = document.getElementById('clear-selection-btn');
+
+            if (bulkGroupSelect) bulkGroupSelect.disabled = !hasSelection;
+            if (bulkGroupApply) bulkGroupApply.disabled = !hasSelection;
+            if (bulkWatchSelect) bulkWatchSelect.disabled = !hasSelection;
+            if (bulkWatchApply) bulkWatchApply.disabled = !hasSelection;
+            if (clearBtn) clearBtn.disabled = !hasSelection;
+        }
+
+        function clearSelection() {
+            selectedMacs.clear();
+            lastSelectedIndex = null;
+            renderDevices();
+        }
+
+        function toggleSelectAllVisible() {
+            if (!currentVisibleDevices || currentVisibleDevices.length === 0) return;
+            const allSelected = currentVisibleDevices.every(d => selectedMacs.has(d.mac));
+            if (allSelected) {
+                currentVisibleDevices.forEach(d => selectedMacs.delete(d.mac));
+            } else {
+                currentVisibleDevices.forEach(d => selectedMacs.add(d.mac));
+            }
+            renderDevices();
+        }
+
+        function toggleRowCheckbox(event, mac, index) {
+            event.stopPropagation();
+            if (event.target.checked) {
+                selectedMacs.add(mac);
+            } else {
+                selectedMacs.delete(mac);
+            }
+            lastSelectedIndex = index;
+            renderDevices();
+        }
+
+        function handleRowClick(event, mac, index) {
+            if (event.target && event.target.closest('input.row-select-checkbox')) return;
+            const isCtrl = event.ctrlKey || event.metaKey;
+            const isShift = event.shiftKey;
+
+            if (isShift && lastSelectedIndex !== null && currentVisibleDevices.length > 0) {
+                const start = Math.max(0, Math.min(lastSelectedIndex, index));
+                const end = Math.min(currentVisibleDevices.length - 1, Math.max(lastSelectedIndex, index));
+                if (!isCtrl) selectedMacs.clear();
+                for (let i = start; i <= end; i++) {
+                    selectedMacs.add(currentVisibleDevices[i].mac);
+                }
+            } else if (isCtrl) {
+                if (selectedMacs.has(mac)) {
+                    selectedMacs.delete(mac);
+                } else {
+                    selectedMacs.add(mac);
+                }
+            } else {
+                if (selectedMacs.has(mac)) {
+                    selectedMacs.delete(mac);
+                } else {
+                    selectedMacs.clear();
+                    selectedMacs.add(mac);
+                }
+            }
+
+            lastSelectedIndex = index;
+            renderDevices();
+        }
+
+        function getContrastColor(hexColor) {
+            if (!hexColor) return 'var(--text-primary)';
+            // Remove # if present
+            const hex = hexColor.replace('#', '');
+            // Parse RGB values
+            const r = parseInt(hex.substr(0, 2), 16);
+            const g = parseInt(hex.substr(2, 2), 16);
+            const b = parseInt(hex.substr(4, 2), 16);
+            // Calculate relative luminance
+            const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+            // Return black for light backgrounds, white for dark
+            return luminance > 0.5 ? '#000000' : '#ffffff';
+        }
+
         function renderDevices() {
             const searchTerm = document.getElementById('search').value.toLowerCase();
             const tbody = document.getElementById('device-list');
@@ -1027,38 +1297,59 @@ HTML_TEMPLATE = """
 
             document.getElementById('visible-count').textContent = filtered.length;
 
-            if (filtered.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 2rem; color: var(--text-muted);">No targets match criteria</td></tr>';
+            const sorted = applySort(filtered);
+            currentVisibleDevices = sorted;
+
+            if (sorted.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 2rem; color: var(--text-muted);">No targets match criteria</td></tr>';
+                updateSelectionUI();
                 return;
             }
 
-            tbody.innerHTML = filtered.map(d => {
+            tbody.innerHTML = sorted.map((d, index) => {
                 const typeClass = getTypeClass(d.device_type);
                 const lastSeen = formatLastSeen(d.last_seen);
                 const isRecent = isRecentlySeen(d.last_seen);
                 const watchedStar = d.watched ? '<span class="watched-star">★</span>' : '';
+                const isSelected = selectedMacs.has(d.mac);
+                const rowClass = isSelected ? 'selected' : '';
+                const checkedAttr = isSelected ? 'checked' : '';
+
+                // Build group pill HTML
+                let groupHtml = '—';
+                if (d.group_name && d.group_color) {
+                    const textColor = getContrastColor(d.group_color);
+                    groupHtml = '<span style="background: ' + d.group_color + '; color: ' + textColor + '; padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.7rem; font-weight: 500;">' + d.group_name + '</span>';
+                } else if (d.group_name) {
+                    groupHtml = '<span style="background: var(--bg-tertiary); color: var(--text-secondary); padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.7rem;">' + d.group_name + '</span>';
+                }
 
                 if (compactView) {
-                    // Compact: Type, Name/MAC, Last Seen
+                    // Compact: Type, Name/MAC, Sightings, Last Seen, Group
                     const rawDisplayName = d.friendly_name || d.vendor || d.mac;
                     const displayName = d.friendly_name ? obfuscateName(rawDisplayName) : (d.vendor ? rawDisplayName : obfuscateMAC(rawDisplayName));
-                    return '<tr onclick="showDevice(\\'' + d.mac + '\\')" style="height: auto;">' +
+                    return '<tr class="' + rowClass + '" onclick="handleRowClick(event, \\'' + d.mac + '\\', ' + index + ')" ondblclick="showDevice(\\'' + d.mac + '\\')" style="height: auto;">' +
+                        '<td class="select-col"><input type="checkbox" class="row-select-checkbox" ' + checkedAttr + ' onclick="toggleRowCheckbox(event, \\'' + d.mac + '\\', ' + index + ')"></td>' +
                         '<td style="padding: 0.4rem 0.5rem;"><span class="type-badge ' + typeClass + '" style="font-size: 0.65rem; padding: 0.15rem 0.4rem;">' + watchedStar + d.type_icon + '</span></td>' +
                         '<td colspan="3" style="padding: 0.4rem 0.5rem; font-size: 0.75rem;">' + displayName + '</td>' +
                         '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;">' + d.total_sightings + '</td>' +
                         '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;" class="' + (isRecent ? 'recent' : '') + '">' + lastSeen + '</td>' +
+                        '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;">' + groupHtml + '</td>' +
                         '</tr>';
                 }
 
-                return '<tr onclick="showDevice(\\'' + d.mac + '\\')">' +
+                return '<tr class="' + rowClass + '" onclick="handleRowClick(event, \\'' + d.mac + '\\', ' + index + ')" ondblclick="showDevice(\\'' + d.mac + '\\')">' +
+                    '<td class="select-col"><input type="checkbox" class="row-select-checkbox" ' + checkedAttr + ' onclick="toggleRowCheckbox(event, \\'' + d.mac + '\\', ' + index + ')"></td>' +
                     '<td><span class="type-badge ' + typeClass + '">' + watchedStar + d.type_icon + ' ' + d.type_label + '</span></td>' +
                     '<td class="mac-addr">' + obfuscateMAC(d.mac) + '</td>' +
                     '<td class="vendor-name">' + (d.vendor || '—') + '</td>' +
                     '<td class="device-name">' + (d.friendly_name ? obfuscateName(d.friendly_name) : '—') + '</td>' +
                     '<td class="sighting-count">' + d.total_sightings + '</td>' +
                     '<td class="last-seen ' + (isRecent ? 'recent' : '') + '">' + lastSeen + '</td>' +
+                    '<td class="group-name">' + groupHtml + '</td>' +
                     '</tr>';
             }).join('');
+            updateSelectionUI();
         }
 
         function getTypeClass(type) {
@@ -1182,6 +1473,25 @@ HTML_TEMPLATE = """
                 cachedGroups.map(g => '<option value="' + g.id + '"' + (g.id === currentGroupId ? ' selected' : '') + '>' + g.name + '</option>').join('');
         }
 
+        async function loadGroupsForBulkSelect() {
+            const select = document.getElementById('bulk-group-select');
+            if (!select) return;
+
+            if (cachedGroups.length === 0) {
+                try {
+                    const response = await fetch('/api/groups');
+                    const data = await response.json();
+                    cachedGroups = data.groups || [];
+                } catch (error) {
+                    return;
+                }
+            }
+
+            select.innerHTML = '<option value="">Assign group...</option>' +
+                '<option value="__none__">No group</option>' +
+                cachedGroups.map(g => '<option value="' + g.id + '">' + g.name + '</option>').join('');
+        }
+
         async function setDeviceGroup(mac, groupId) {
             try {
                 await fetch('/api/device/' + encodeURIComponent(mac) + '/group', {
@@ -1191,6 +1501,58 @@ HTML_TEMPLATE = """
                 });
                 refreshDevices();
             } catch (error) { console.error('Error setting group:', error); }
+        }
+
+        async function applyBulkGroup() {
+            const select = document.getElementById('bulk-group-select');
+            if (!select || !select.value) return;
+            if (selectedMacs.size === 0) return;
+
+            const groupValue = select.value;
+            const groupId = groupValue === '__none__' ? null : parseInt(groupValue);
+            const macs = Array.from(selectedMacs);
+
+            try {
+                await Promise.all(macs.map(mac =>
+                    fetch('/api/device/' + encodeURIComponent(mac) + '/group', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ group_id: groupId })
+                    })
+                ));
+                refreshDevices();
+            } catch (error) {
+                console.error('Error applying bulk group:', error);
+            }
+        }
+
+        async function applyBulkWatch() {
+            const select = document.getElementById('bulk-watch-select');
+            if (!select || !select.value) return;
+            if (selectedMacs.size === 0) return;
+
+            const desired = select.value;
+            const deviceMap = new Map(allDevices.map(d => [d.mac, d]));
+            const macs = Array.from(selectedMacs);
+            const requests = [];
+
+            macs.forEach(mac => {
+                const device = deviceMap.get(mac);
+                if (!device) return;
+                if (desired === 'on' && !device.watched) {
+                    requests.push(fetch('/api/device/' + encodeURIComponent(mac) + '/watch', { method: 'POST' }));
+                }
+                if (desired === 'off' && device.watched) {
+                    requests.push(fetch('/api/device/' + encodeURIComponent(mac) + '/watch', { method: 'POST' }));
+                }
+            });
+
+            try {
+                await Promise.all(requests);
+                refreshDevices();
+            } catch (error) {
+                console.error('Error applying bulk watch:', error);
+            }
         }
 
         async function loadDwellStats(mac) {
@@ -1332,11 +1694,14 @@ HTML_TEMPLATE = """
         function closeModal() { document.getElementById('device-modal').classList.remove('active'); }
 
         function exportData() {
-            const csv = ['MAC,Vendor,Identifier,Class,Sightings,Last_Contact'];
-            allDevices.forEach(d => {
+            const csv = ['MAC,Vendor,Identifier,Class,Sightings,Last_Contact,Group'];
+            const exportDevices = selectedMacs.size > 0
+                ? allDevices.filter(d => selectedMacs.has(d.mac))
+                : allDevices;
+            exportDevices.forEach(d => {
                 const mac = obfuscateMAC(d.mac);
                 const name = d.friendly_name ? obfuscateName(d.friendly_name) : '';
-                csv.push([mac, d.vendor || '', name, d.device_type || '', d.total_sightings, d.last_seen || ''].join(','));
+                csv.push([mac, d.vendor || '', name, d.device_type || '', d.total_sightings, d.last_seen || '', d.group_name || ''].join(','));
             });
             const blob = new Blob([csv.join('\\n')], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -1355,6 +1720,15 @@ HTML_TEMPLATE = """
                 renderDevices();
             });
         });
+
+        document.querySelectorAll('.device-table th.sortable').forEach(th => {
+            th.addEventListener('click', () => setSort(th.dataset.sort));
+        });
+
+        const selectAllCheckbox = document.getElementById('select-all-checkbox');
+        if (selectAllCheckbox) {
+            selectAllCheckbox.addEventListener('change', toggleSelectAllVisible);
+        }
 
         document.getElementById('search').addEventListener('input', renderDevices);
         document.getElementById('device-modal').addEventListener('click', (e) => { if (e.target.id === 'device-modal') closeModal(); });
@@ -1397,6 +1771,9 @@ HTML_TEMPLATE = """
 
         updateViewToggle();
         updateScreenshotToggle();
+        updateSortIndicators();
+        loadGroupsForBulkSelect();
+        updateSelectionUI();
         refreshDevices();
         setInterval(refreshDevices, 10000);
     </script>
@@ -2174,6 +2551,8 @@ class WebServer:
     async def api_devices(self, request: web.Request) -> web.Response:
         """Get all devices with stats."""
         devices = await db.get_all_devices(include_ignored=True)
+        groups = await db.get_groups()
+        group_lookup = {g.id: g for g in groups}
 
         now = datetime.now()
         today = now.date()
@@ -2211,6 +2590,9 @@ class WebServer:
 
             vendor_display = d.vendor
 
+            # Get group info for this device
+            group = group_lookup.get(d.group_id) if d.group_id else None
+
             device_list.append({
                 "mac": d.mac,
                 "vendor": vendor_display,
@@ -2226,6 +2608,9 @@ class WebServer:
                 "total_sightings": d.total_sightings,
                 "service_uuids": d.service_uuids,
                 "uuid_names": get_uuid_names(d.service_uuids),
+                "group_id": d.group_id,
+                "group_name": group.name if group else None,
+                "group_color": group.color if group else None,
             })
 
         return web.json_response({
