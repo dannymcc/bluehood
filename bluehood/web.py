@@ -394,6 +394,28 @@ HTML_TEMPLATE = """
             border-bottom: 1px solid var(--border-color);
         }
 
+        .device-table th.sortable {
+            cursor: pointer;
+            user-select: none;
+            transition: color 0.1s ease, background 0.1s ease;
+        }
+
+        .device-table th.sortable:hover {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+        }
+
+        .device-table th.sortable.active {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+        }
+
+        .sort-indicator {
+            margin-left: 0.35rem;
+            font-size: 0.6rem;
+            opacity: 0.7;
+        }
+
         .device-table td {
             padding: 0.6rem 0.75rem;
             font-size: 0.8rem;
@@ -770,17 +792,18 @@ HTML_TEMPLATE = """
                         <span style="font-size: 0.7rem; color: var(--text-muted);">
                             <span id="visible-count">--</span> targets
                         </span>
+                        <button class="btn" onclick="resetSort()">Reset Sort</button>
                     </div>
                 </div>
                 <table class="device-table">
                     <thead>
                         <tr>
-                            <th>Class</th>
-                            <th>MAC Address</th>
-                            <th>Vendor</th>
-                            <th>Identifier</th>
-                            <th>Sightings</th>
-                            <th>Last Contact</th>
+                            <th class="sortable" data-sort="class">Class<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="mac">MAC Address<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="vendor">Vendor<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="identifier">Identifier<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="sightings">Sightings<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="last_seen">Last Contact<span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody id="device-list">
@@ -837,6 +860,8 @@ HTML_TEMPLATE = """
         let dateFilteredDevices = null;
         let compactView = localStorage.getItem('bluehood_compact_view') === 'true';
         let screenshotMode = localStorage.getItem('bluehood_screenshot_mode') === 'true';
+        const defaultSortState = { column: 'last_seen', direction: 'asc' };
+        let sortState = { ...defaultSortState };
 
         function toggleViewMode() {
             compactView = !compactView;
@@ -953,6 +978,73 @@ HTML_TEMPLATE = """
             renderDevices();
         }
 
+        function resetSort() {
+            sortState = { ...defaultSortState };
+            updateSortIndicators();
+            renderDevices();
+        }
+
+        function setSort(column) {
+            if (sortState.column === column) {
+                sortState.direction = sortState.direction === 'asc' ? 'desc' : 'asc';
+            } else {
+                sortState.column = column;
+                sortState.direction = 'asc';
+            }
+            updateSortIndicators();
+            renderDevices();
+        }
+
+        function updateSortIndicators() {
+            document.querySelectorAll('.device-table th.sortable').forEach(th => {
+                const indicator = th.querySelector('.sort-indicator');
+                if (!indicator) return;
+                const isActive = th.dataset.sort === sortState.column;
+                th.classList.toggle('active', isActive);
+                if (!isActive) {
+                    indicator.textContent = '';
+                } else {
+                    indicator.textContent = sortState.direction === 'asc' ? '▲' : '▼';
+                }
+            });
+        }
+
+        function getSortValue(device, column) {
+            switch (column) {
+                case 'class':
+                    return (device.type_label || device.device_type || '').toLowerCase();
+                case 'mac':
+                    return (device.mac || '').toLowerCase();
+                case 'vendor':
+                    return (device.vendor || '').toLowerCase();
+                case 'identifier':
+                    return (device.friendly_name || '').toLowerCase();
+                case 'sightings':
+                    return Number.isFinite(device.total_sightings) ? device.total_sightings : -1;
+                case 'last_seen': {
+                    if (!device.last_seen) return Number.POSITIVE_INFINITY;
+                    const last = new Date(device.last_seen);
+                    const now = new Date();
+                    return Math.max(0, now - last);
+                }
+                default:
+                    return '';
+            }
+        }
+
+        function applySort(devices) {
+            const sorted = [...devices];
+            const direction = sortState.direction === 'asc' ? 1 : -1;
+            sorted.sort((a, b) => {
+                const aVal = getSortValue(a, sortState.column);
+                const bVal = getSortValue(b, sortState.column);
+                if (aVal < bVal) return -1 * direction;
+                if (aVal > bVal) return 1 * direction;
+                return 0;
+            });
+            return sorted;
+        }
+
         function renderDevices() {
             const searchTerm = document.getElementById('search').value.toLowerCase();
             const tbody = document.getElementById('device-list');
@@ -971,12 +1063,14 @@ HTML_TEMPLATE = """
 
             document.getElementById('visible-count').textContent = filtered.length;
 
-            if (filtered.length === 0) {
+            const sorted = applySort(filtered);
+
+            if (sorted.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 2rem; color: var(--text-muted);">No targets match criteria</td></tr>';
                 return;
             }
 
-            tbody.innerHTML = filtered.map(d => {
+            tbody.innerHTML = sorted.map(d => {
                 const typeClass = getTypeClass(d.device_type);
                 const lastSeen = formatLastSeen(d.last_seen);
                 const isRecent = isRecentlySeen(d.last_seen);
@@ -1300,6 +1394,10 @@ HTML_TEMPLATE = """
             });
         });
 
+        document.querySelectorAll('.device-table th.sortable').forEach(th => {
+            th.addEventListener('click', () => setSort(th.dataset.sort));
+        });
+
         document.getElementById('search').addEventListener('input', renderDevices);
         document.getElementById('device-modal').addEventListener('click', (e) => { if (e.target.id === 'device-modal') closeModal(); });
         document.getElementById('shortcuts-modal').addEventListener('click', (e) => { if (e.target.id === 'shortcuts-modal') closeShortcutsModal(); });
@@ -1341,6 +1439,7 @@ HTML_TEMPLATE = """
 
         updateViewToggle();
         updateScreenshotToggle();
+        updateSortIndicators();
         refreshDevices();
         setInterval(refreshDevices, 10000);
     </script>
