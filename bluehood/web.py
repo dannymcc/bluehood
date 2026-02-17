@@ -52,6 +52,29 @@ HTML_TEMPLATE = """
             --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', Consolas, monospace;
         }
 
+        [data-theme="light"] {
+            --bg-primary: #f5f5f5;
+            --bg-secondary: #e8e8e8;
+            --bg-tertiary: #ffffff;
+            --bg-hover: #d8d8d8;
+            --bg-panel: #efefef;
+            --text-primary: #1a1a1a;
+            --text-secondary: #555555;
+            --text-muted: #888888;
+            --border-color: #cccccc;
+            --border-active: #999999;
+        }
+
+        [data-theme="light"] .type-phone { background: #dbeafe; color: #1d4ed8; }
+        [data-theme="light"] .type-laptop { background: #ccfbf1; color: #0f766e; }
+        [data-theme="light"] .type-audio { background: #f3e8ff; color: #7c3aed; }
+        [data-theme="light"] .type-watch { background: #dcfce7; color: #15803d; }
+        [data-theme="light"] .type-smart { background: #fef3c7; color: #b45309; }
+        [data-theme="light"] .type-tv { background: #fce7f3; color: #be185d; }
+        [data-theme="light"] .type-vehicle { background: #fef9c3; color: #a16207; }
+        [data-theme="light"] .type-unknown { background: #e5e5e5; color: #555; }
+        [data-theme="light"] .modal-overlay.active { background: rgba(0, 0, 0, 0.5); }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
@@ -668,6 +691,23 @@ HTML_TEMPLATE = """
         .footer a { color: var(--accent-red); text-decoration: none; }
         .footer a:hover { text-decoration: underline; }
 
+        .theme-toggle {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            padding: 0.3rem 0.5rem;
+            cursor: pointer;
+            border-radius: 3px;
+            transition: all 0.1s;
+        }
+
+        .theme-toggle:hover {
+            color: var(--text-primary);
+            border-color: var(--border-active);
+        }
+
         /* Responsive */
         @media (max-width: 900px) {
             .main { grid-template-columns: 1fr; }
@@ -694,6 +734,7 @@ HTML_TEMPLATE = """
                 <span>Scanning</span>
             </div>
             <div class="timestamp" id="last-update">--:--:--</div>
+            <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">☀</button>
         </div>
     </header>
 
@@ -832,6 +873,21 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            const btn = document.getElementById('theme-toggle');
+            if (btn) btn.textContent = theme === 'light' ? '☽' : '☀';
+        }
+
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme') || 'dark';
+            const next = current === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('bluehood_theme', next);
+            applyTheme(next);
+        }
+
+        applyTheme(localStorage.getItem('bluehood_theme') || 'dark');
+
         let allDevices = [];
         let currentFilter = 'all';
         let dateFilteredDevices = null;
@@ -1382,6 +1438,11 @@ SETTINGS_TEMPLATE = """
         .nav-link { color: var(--text-secondary); text-decoration: none; font-size: 0.75rem; padding: 0.4rem 0.75rem; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; transition: all 0.1s; }
         .nav-link:hover, .nav-link.active { color: var(--text-primary); background: var(--bg-tertiary); }
 
+        [data-theme="light"] { --bg-primary: #f5f5f5; --bg-secondary: #e8e8e8; --bg-tertiary: #ffffff; --bg-hover: #d8d8d8; --text-primary: #1a1a1a; --text-secondary: #555555; --text-muted: #888888; --accent-red: #dc2626; --accent-green: #16a34a; --border-color: #cccccc; }
+
+        .theme-toggle { background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.75rem; padding: 0.3rem 0.5rem; cursor: pointer; border-radius: 3px; transition: all 0.1s; }
+        .theme-toggle:hover { color: var(--text-primary); border-color: var(--border-active, #999); }
+
         .main { max-width: 700px; margin: 0 auto; padding: 2rem 1rem; }
         .page-header { margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-color); }
         .page-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.15em; color: var(--text-muted); margin-bottom: 0.5rem; }
@@ -1429,6 +1490,7 @@ SETTINGS_TEMPLATE = """
                 <a href="/about" class="nav-link">Intel</a>
             </nav>
         </div>
+        <div><button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">☀</button></div>
     </header>
 
     <main class="main">
@@ -1550,6 +1612,19 @@ SETTINGS_TEMPLATE = """
     <footer class="footer">BLUEHOOD v0.5.0 // <a href="https://github.com/dannymcc/bluehood">Source</a></footer>
 
     <script>
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            const btn = document.getElementById('theme-toggle');
+            if (btn) btn.textContent = theme === 'light' ? '☽' : '☀';
+        }
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme') || 'dark';
+            const next = current === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('bluehood_theme', next);
+            applyTheme(next);
+        }
+        applyTheme(localStorage.getItem('bluehood_theme') || 'dark');
+
         async function loadSettings() {
             try {
                 const response = await fetch('/api/settings');
@@ -1727,6 +1802,11 @@ ABOUT_TEMPLATE = """
         .nav-link { color: var(--text-secondary); text-decoration: none; font-size: 0.75rem; padding: 0.4rem 0.75rem; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; transition: all 0.1s; }
         .nav-link:hover, .nav-link.active { color: var(--text-primary); background: var(--bg-tertiary); }
 
+        [data-theme="light"] { --bg-primary: #f5f5f5; --bg-secondary: #e8e8e8; --bg-tertiary: #ffffff; --bg-hover: #d8d8d8; --text-primary: #1a1a1a; --text-secondary: #555555; --text-muted: #888888; --accent-red: #dc2626; --accent-amber: #d97706; --border-color: #cccccc; }
+
+        .theme-toggle { background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.75rem; padding: 0.3rem 0.5rem; cursor: pointer; border-radius: 3px; transition: all 0.1s; }
+        .theme-toggle:hover { color: var(--text-primary); border-color: var(--border-active, #999); }
+
         .main { max-width: 800px; margin: 0 auto; padding: 2rem 1rem; }
 
         .hero { text-align: center; margin-bottom: 2.5rem; padding: 2rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 4px; }
@@ -1771,6 +1851,7 @@ ABOUT_TEMPLATE = """
                 <a href="/about" class="nav-link active">Intel</a>
             </nav>
         </div>
+        <div><button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">☀</button></div>
     </header>
 
     <main class="main">
@@ -1840,6 +1921,21 @@ ABOUT_TEMPLATE = """
     </main>
 
     <footer class="footer">BLUEHOOD // <a href="https://github.com/dannymcc/bluehood">Source Repository</a></footer>
+
+    <script>
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            const btn = document.getElementById('theme-toggle');
+            if (btn) btn.textContent = theme === 'light' ? '☽' : '☀';
+        }
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme') || 'dark';
+            const next = current === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('bluehood_theme', next);
+            applyTheme(next);
+        }
+        applyTheme(localStorage.getItem('bluehood_theme') || 'dark');
+    </script>
 </body>
 </html>
 """
@@ -1886,9 +1982,15 @@ LOGIN_TEMPLATE = """
 
         .error-msg { background: rgba(220, 38, 38, 0.1); border: 1px solid var(--accent-red); border-radius: 3px; padding: 0.75rem; margin-bottom: 1rem; color: var(--accent-red); font-size: 0.8rem; text-align: center; display: none; }
         .error-msg.show { display: block; }
+
+        [data-theme="light"] { --bg-primary: #f5f5f5; --bg-secondary: #e8e8e8; --bg-tertiary: #ffffff; --text-primary: #1a1a1a; --text-secondary: #555555; --text-muted: #888888; --accent-red: #dc2626; --border-color: #cccccc; }
+
+        .theme-toggle { position: fixed; top: 1rem; right: 1rem; background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.75rem; padding: 0.3rem 0.5rem; cursor: pointer; border-radius: 3px; transition: all 0.1s; }
+        .theme-toggle:hover { color: var(--text-primary); border-color: var(--border-active, #999); }
     </style>
 </head>
 <body>
+    <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">☀</button>
     <div class="login-container">
         <div class="login-box">
             <div class="login-header">
@@ -1914,6 +2016,19 @@ LOGIN_TEMPLATE = """
     </div>
 
     <script>
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            const btn = document.getElementById('theme-toggle');
+            if (btn) btn.textContent = theme === 'light' ? '☽' : '☀';
+        }
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme') || 'dark';
+            const next = current === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('bluehood_theme', next);
+            applyTheme(next);
+        }
+        applyTheme(localStorage.getItem('bluehood_theme') || 'dark');
+
         document.getElementById('login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const username = document.getElementById('username').value;
