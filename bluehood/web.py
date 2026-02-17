@@ -848,10 +848,11 @@ HTML_TEMPLATE = """
                             <th class="sortable" data-sort="identifier">Identifier<span class="sort-indicator"></span></th>
                             <th class="sortable" data-sort="sightings">Sightings<span class="sort-indicator"></span></th>
                             <th class="sortable" data-sort="last_seen">Last Contact<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="group">Group<span class="sort-indicator"></span></th>
                         </tr>
                     </thead>
                     <tbody id="device-list">
-                        <tr><td colspan="7" style="text-align: center; padding: 2rem; color: var(--text-muted);">Initializing scanner...</td></tr>
+                        <tr><td colspan="8" style="text-align: center; padding: 2rem; color: var(--text-muted);">Initializing scanner...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1077,6 +1078,8 @@ HTML_TEMPLATE = """
                     const now = new Date();
                     return Math.max(0, now - last);
                 }
+                case 'group':
+                    return (device.group_name || '').toLowerCase();
                 default:
                     return '';
             }
@@ -1206,6 +1209,20 @@ HTML_TEMPLATE = """
             renderDevices();
         }
 
+        function getContrastColor(hexColor) {
+            if (!hexColor) return 'var(--text-primary)';
+            // Remove # if present
+            const hex = hexColor.replace('#', '');
+            // Parse RGB values
+            const r = parseInt(hex.substr(0, 2), 16);
+            const g = parseInt(hex.substr(2, 2), 16);
+            const b = parseInt(hex.substr(4, 2), 16);
+            // Calculate relative luminance
+            const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+            // Return black for light backgrounds, white for dark
+            return luminance > 0.5 ? '#000000' : '#ffffff';
+        }
+
         function renderDevices() {
             const searchTerm = document.getElementById('search').value.toLowerCase();
             const tbody = document.getElementById('device-list');
@@ -1228,7 +1245,7 @@ HTML_TEMPLATE = """
             currentVisibleDevices = sorted;
 
             if (sorted.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 2rem; color: var(--text-muted);">No targets match criteria</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 2rem; color: var(--text-muted);">No targets match criteria</td></tr>';
                 updateSelectionUI();
                 return;
             }
@@ -1242,8 +1259,17 @@ HTML_TEMPLATE = """
                 const rowClass = isSelected ? 'selected' : '';
                 const checkedAttr = isSelected ? 'checked' : '';
 
+                // Build group pill HTML
+                let groupHtml = '—';
+                if (d.group_name && d.group_color) {
+                    const textColor = getContrastColor(d.group_color);
+                    groupHtml = '<span style="background: ' + d.group_color + '; color: ' + textColor + '; padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.7rem; font-weight: 500;">' + d.group_name + '</span>';
+                } else if (d.group_name) {
+                    groupHtml = '<span style="background: var(--bg-tertiary); color: var(--text-secondary); padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.7rem;">' + d.group_name + '</span>';
+                }
+
                 if (compactView) {
-                    // Compact: Type, Name/MAC, Last Seen
+                    // Compact: Type, Name/MAC, Sightings, Last Seen, Group
                     const rawDisplayName = d.friendly_name || d.vendor || d.mac;
                     const displayName = d.friendly_name ? obfuscateName(rawDisplayName) : (d.vendor ? rawDisplayName : obfuscateMAC(rawDisplayName));
                     return '<tr class="' + rowClass + '" onclick="handleRowClick(event, \\'' + d.mac + '\\', ' + index + ')" ondblclick="showDevice(\\'' + d.mac + '\\')" style="height: auto;">' +
@@ -1252,6 +1278,7 @@ HTML_TEMPLATE = """
                         '<td colspan="3" style="padding: 0.4rem 0.5rem; font-size: 0.75rem;">' + displayName + '</td>' +
                         '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;">' + d.total_sightings + '</td>' +
                         '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;" class="' + (isRecent ? 'recent' : '') + '">' + lastSeen + '</td>' +
+                        '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;">' + groupHtml + '</td>' +
                         '</tr>';
                 }
 
@@ -1263,6 +1290,7 @@ HTML_TEMPLATE = """
                     '<td class="device-name">' + (d.friendly_name ? obfuscateName(d.friendly_name) : '—') + '</td>' +
                     '<td class="sighting-count">' + d.total_sightings + '</td>' +
                     '<td class="last-seen ' + (isRecent ? 'recent' : '') + '">' + lastSeen + '</td>' +
+                    '<td class="group-name">' + groupHtml + '</td>' +
                     '</tr>';
             }).join('');
             updateSelectionUI();
@@ -1610,14 +1638,14 @@ HTML_TEMPLATE = """
         function closeModal() { document.getElementById('device-modal').classList.remove('active'); }
 
         function exportData() {
-            const csv = ['MAC,Vendor,Identifier,Class,Sightings,Last_Contact'];
+            const csv = ['MAC,Vendor,Identifier,Class,Sightings,Last_Contact,Group'];
             const exportDevices = selectedMacs.size > 0
                 ? allDevices.filter(d => selectedMacs.has(d.mac))
                 : allDevices;
             exportDevices.forEach(d => {
                 const mac = obfuscateMAC(d.mac);
                 const name = d.friendly_name ? obfuscateName(d.friendly_name) : '';
-                csv.push([mac, d.vendor || '', name, d.device_type || '', d.total_sightings, d.last_seen || ''].join(','));
+                csv.push([mac, d.vendor || '', name, d.device_type || '', d.total_sightings, d.last_seen || '', d.group_name || ''].join(','));
             });
             const blob = new Blob([csv.join('\\n')], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -2408,6 +2436,8 @@ class WebServer:
     async def api_devices(self, request: web.Request) -> web.Response:
         """Get all devices with stats."""
         devices = await db.get_all_devices(include_ignored=True)
+        groups = await db.get_groups()
+        group_lookup = {g.id: g for g in groups}
 
         now = datetime.now()
         today = now.date()
@@ -2445,6 +2475,9 @@ class WebServer:
 
             vendor_display = d.vendor
 
+            # Get group info for this device
+            group = group_lookup.get(d.group_id) if d.group_id else None
+
             device_list.append({
                 "mac": d.mac,
                 "vendor": vendor_display,
@@ -2460,6 +2493,9 @@ class WebServer:
                 "total_sightings": d.total_sightings,
                 "service_uuids": d.service_uuids,
                 "uuid_names": get_uuid_names(d.service_uuids),
+                "group_id": d.group_id,
+                "group_name": group.name if group else None,
+                "group_color": group.color if group else None,
             })
 
         return web.json_response({
