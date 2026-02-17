@@ -329,6 +329,12 @@ Tracks how long devices spend in range by analyzing gaps between sightings. A co
 
 Contributions welcome! Please open an issue or PR on GitHub.
 
+### Contributors
+
+- [@martinh2011](https://github.com/martinh2011) (Martin Hüser) - MAC vendor cache improvements
+- [@hatedabamboo](https://github.com/hatedabamboo) (Kirill Solovei) - Light theme support
+- [@krnltrp](https://github.com/krnltrp) - Web UI enhancements
+
 ## License
 
 MIT License - See [LICENSE](LICENSE) for details.
