@@ -20,7 +20,7 @@ COPY README.md .
 
 RUN pip install --no-cache-dir -e .
 
-# Create data directory for database
+# Create data directory for database and cache
 RUN mkdir -p /data && chown bluehood:bluehood /data
 
 # Environment variables
