@@ -1,6 +1,6 @@
 services:
   bluehood:
-    build: .
+    image: ghcr.io/dannymcc/bluehood:latest
     container_name: bluehood
     restart: unless-stopped
 

@@ -98,15 +98,18 @@ Bluehood is a Bluetooth scanner that:
 ### Quick Start with Docker (Recommended)
 
 ```bash
-# Clone the repository
-git clone https://github.com/dannymcc/bluehood.git
-cd bluehood
-
-# Start with Docker Compose
+# Create a docker-compose.yml or download the one from this repo
+# Then start with Docker Compose
 docker compose up -d
 
 # View logs
 docker compose logs -f
+```
+
+The Docker image is available on GitHub Container Registry:
+
+```
+ghcr.io/dannymcc/bluehood:latest
 ```
 
 The web dashboard will be available at **http://localhost:8080**
@@ -126,7 +129,7 @@ The web dashboard will be available at **http://localhost:8080**
 | `BLUEHOOD_ADAPTER` | auto | Bluetooth adapter (e.g., `hci0`) |
 | `BLUEHOOD_DATA_DIR` | `/data` | Database storage directory |
 
-### Manual Installation
+### Manual Installation (Linux)
 
 ```bash
 # Install system dependencies (Arch Linux)
@@ -162,6 +165,30 @@ Bluetooth scanning requires elevated privileges. Choose one:
    sudo systemctl daemon-reload
    sudo systemctl enable --now bluehood
    ```
+
+### macOS
+
+Bluehood works natively on macOS without Docker. macOS uses CoreBluetooth instead of BlueZ, which is handled automatically by the `bleak` library.
+
+```bash
+# Clone the repository
+git clone https://github.com/dannymcc/bluehood.git
+cd bluehood
+
+# Create a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install
+pip install -e .
+
+# Run
+python -m bluehood.daemon
+```
+
+The web dashboard will be available at **http://localhost:8080**
+
+> **Note**: On first run, macOS will prompt you to allow Bluetooth access. You must grant this permission for scanning to work.
 
 ## Usage
 
