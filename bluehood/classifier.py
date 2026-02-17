@@ -341,16 +341,45 @@ def get_uuid_names(service_uuids: Optional[list[str]]) -> list[str]:
     return names
 
 
+# Bluetooth major device class to device type mapping
+# See: https://www.bluetooth.com/specifications/assigned-numbers/baseband/
+DEVICE_CLASS_MAJOR_MAP = {
+    1: TYPE_COMPUTER,     # Computer
+    2: TYPE_PHONE,        # Phone
+    3: TYPE_NETWORK,      # LAN/Network Access Point
+    4: TYPE_HEADPHONES,   # Audio/Video
+    5: TYPE_GAMING,       # Peripheral (keyboard, mouse, etc.)
+    6: TYPE_PRINTER,      # Imaging (printer, scanner, camera)
+    7: TYPE_WEARABLE,     # Wearable
+    8: TYPE_GAMING,       # Toy
+    9: TYPE_WEARABLE,     # Health
+}
+
+
+def classify_by_device_class(device_class: Optional[int]) -> Optional[str]:
+    """Classify a device based on its Classic Bluetooth device class.
+
+    Returns device type or None if no match.
+    """
+    if device_class is None:
+        return None
+
+    # Major device class is bits 8-12
+    major = (device_class >> 8) & 0x1F
+    return DEVICE_CLASS_MAJOR_MAP.get(major)
+
+
 def classify_device(
     vendor: Optional[str],
     name: Optional[str] = None,
-    service_uuids: Optional[list[str]] = None
+    service_uuids: Optional[list[str]] = None,
+    device_class: Optional[int] = None,
 ) -> str:
     """
-    Classify a device based on its vendor, name, and service UUIDs.
+    Classify a device based on its vendor, name, service UUIDs, and device class.
     Returns a device type constant.
 
-    Priority: Service UUIDs > Name patterns > Vendor patterns
+    Priority: Service UUIDs > Name patterns > Device class > Vendor patterns
     """
     # Try UUID-based classification first (most accurate)
     if service_uuids:
@@ -381,6 +410,12 @@ def classify_device(
             return TYPE_TV
         if any(x in name_lower for x in ["car", "vehicle", "model 3", "model y", "model s"]):
             return TYPE_VEHICLE
+
+    # Try Classic BT device class (more reliable than vendor guessing)
+    if device_class is not None:
+        class_type = classify_by_device_class(device_class)
+        if class_type:
+            return class_type
 
     # Fall back to vendor-based classification
     if vendor:

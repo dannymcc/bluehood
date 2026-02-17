@@ -190,6 +190,7 @@ async def get_all_devices(include_ignored: bool = True) -> list[Device]:
 async def upsert_device(
     mac: str,
     vendor: Optional[str] = None,
+    friendly_name: Optional[str] = None,
     rssi: Optional[int] = None,
     service_uuids: Optional[list[str]] = None,
     bt_type: str = "ble",
@@ -214,6 +215,11 @@ async def upsert_device(
             # Build update based on what we have
             updates = ["last_seen = ?", "total_sightings = total_sightings + 1"]
             params = [now.isoformat()]
+
+            # Update friendly_name if we have one and device doesn't
+            if friendly_name and not existing["friendly_name"]:
+                updates.append("friendly_name = ?")
+                params.append(friendly_name)
 
             # Update vendor if we have one and device doesn't
             if vendor and not existing["vendor"]:
@@ -257,10 +263,10 @@ async def upsert_device(
             # Insert new device
             await db.execute(
                 """
-                INSERT INTO devices (mac, vendor, first_seen, last_seen, total_sightings, service_uuids, bt_type, device_class)
-                VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+                INSERT INTO devices (mac, vendor, friendly_name, first_seen, last_seen, total_sightings, service_uuids, bt_type, device_class)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
                 """,
-                (mac, vendor, now.isoformat(), now.isoformat(), uuids_json, bt_type, device_class)
+                (mac, vendor, friendly_name, now.isoformat(), now.isoformat(), uuids_json, bt_type, device_class)
             )
 
         # Record sighting

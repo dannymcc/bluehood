@@ -1429,11 +1429,11 @@ HTML_TEMPLATE = """
                 '</div>' +
                 '<div class="heatmap-section">' +
                 '<div class="heatmap-title">Hourly Activity Matrix (30d)</div>' +
-                '<div class="heatmap"><div class="heatmap-labels">00  03  06  09  12  15  18  21</div><div>' + (data.hourly_heatmap || '------------------------') + '</div></div>' +
+                '<div class="heatmap"><div class="heatmap-labels">00  03  06  09  12  15  18  21</div><div>' + renderHourlyHeatmap(data.hourly_data) + '</div></div>' +
                 '</div>' +
                 '<div class="heatmap-section">' +
                 '<div class="heatmap-title">Daily Activity Matrix</div>' +
-                '<div class="heatmap"><div class="heatmap-labels">M   T   W   T   F   S   S</div><div>' + (data.daily_heatmap || '-------') + '</div></div>' +
+                '<div class="heatmap"><div class="heatmap-labels">M   T   W   T   F   S   S</div><div>' + renderDailyHeatmap(data.daily_data) + '</div></div>' +
                 '</div>' +
                 '<div class="heatmap-section">' +
                 '<div class="heatmap-title">Presence Timeline (30d)</div>' +
@@ -1612,6 +1612,38 @@ HTML_TEMPLATE = """
             } catch (error) { console.error('Error:', error); }
         }
 
+        function renderHourlyHeatmap(hourlyData) {
+            if (!hourlyData || Object.keys(hourlyData).length === 0) return '------------------------';
+            var blocks = ' ░▒▓█';
+            var offset = -(new Date().getTimezoneOffset() / 60);
+            var shifted = {};
+            for (var h in hourlyData) {
+                var localHour = ((parseInt(h) + offset) % 24 + 24) % 24;
+                shifted[localHour] = (shifted[localHour] || 0) + hourlyData[h];
+            }
+            var max = Math.max(...Object.values(shifted), 1);
+            var result = '';
+            for (var i = 0; i < 24; i++) {
+                var count = shifted[i] || 0;
+                var intensity = Math.floor((count / max) * (blocks.length - 1));
+                result += blocks[intensity];
+            }
+            return result;
+        }
+
+        function renderDailyHeatmap(dailyData) {
+            if (!dailyData || Object.keys(dailyData).length === 0) return '-------';
+            var blocks = ' ░▒▓█';
+            var max = Math.max(...Object.values(dailyData), 1);
+            var result = '';
+            for (var d = 0; d < 7; d++) {
+                var count = dailyData[d] || dailyData[String(d)] || 0;
+                var intensity = Math.floor((count / max) * (blocks.length - 1));
+                result += blocks[intensity];
+            }
+            return result;
+        }
+
         function renderTimeline(timeline) {
             if (!timeline || timeline.length === 0) return '<div style="color: var(--text-muted); font-size: 0.75rem;">No data</div>';
             const maxCount = Math.max(...timeline.map(d => d.count));
@@ -1693,6 +1725,14 @@ HTML_TEMPLATE = """
 
         function closeModal() { document.getElementById('device-modal').classList.remove('active'); }
 
+        function csvField(val) {
+            const s = String(val);
+            if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+                return '"' + s.replace(/"/g, '""') + '"';
+            }
+            return s;
+        }
+
         function exportData() {
             const csv = ['MAC,Vendor,Identifier,Class,Sightings,Last_Contact,Group'];
             const exportDevices = selectedMacs.size > 0
@@ -1701,7 +1741,7 @@ HTML_TEMPLATE = """
             exportDevices.forEach(d => {
                 const mac = obfuscateMAC(d.mac);
                 const name = d.friendly_name ? obfuscateName(d.friendly_name) : '';
-                csv.push([mac, d.vendor || '', name, d.device_type || '', d.total_sightings, d.last_seen || '', d.group_name || ''].join(','));
+                csv.push([mac, d.vendor || '', name, d.device_type || '', d.total_sightings, d.last_seen || '', d.group_name || ''].map(csvField).join(','));
             });
             const blob = new Blob([csv.join('\\n')], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -2568,7 +2608,7 @@ class WebServer:
         device_list = []
         for d in devices:
             # Use service UUIDs for better classification
-            device_type = d.device_type or classify_device(d.vendor, d.friendly_name, d.service_uuids)
+            device_type = d.device_type or classify_device(d.vendor, d.friendly_name, d.service_uuids, d.device_class)
             type_set.add(device_type)
             total_sightings += d.total_sightings
 
@@ -2633,7 +2673,7 @@ class WebServer:
         daily = await db.get_daily_distribution(mac, 30)
         sightings = await db.get_sightings(mac, 30)
         daily_timeline = await db.get_daily_sightings(mac, 30)
-        device_type = device.device_type or classify_device(device.vendor, device.friendly_name, device.service_uuids)
+        device_type = device.device_type or classify_device(device.vendor, device.friendly_name, device.service_uuids, device.device_class)
 
         # Calculate pattern summary
         pattern = self._analyze_pattern(hourly, daily, len(sightings))
@@ -2668,6 +2708,8 @@ class WebServer:
             "proximity_zone": proximity_zone,
             "hourly_heatmap": generate_hourly_heatmap(hourly),
             "daily_heatmap": generate_daily_heatmap(daily),
+            "hourly_data": {str(k): v for k, v in hourly.items()},
+            "daily_data": {str(k): v for k, v in daily.items()},
             "timeline": daily_timeline,
         })
 
@@ -2845,7 +2887,7 @@ class WebServer:
 
         device_list = []
         for r in results:
-            device_type = r.get("device_type") or classify_device(r.get("vendor"), r.get("friendly_name"))
+            device_type = r.get("device_type") or classify_device(r.get("vendor"), r.get("friendly_name"), device_class=r.get("device_class"))
             device_list.append({
                 "mac": r["mac"],
                 "vendor": r.get("vendor"),

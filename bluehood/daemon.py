@@ -155,7 +155,7 @@ class BluehoodDaemon:
             for d in devices:
                 device_type = d.device_type
                 if not device_type:
-                    device_type = classify_device(d.vendor, d.friendly_name)
+                    device_type = classify_device(d.vendor, d.friendly_name, d.service_uuids, d.device_class)
                     # Store the auto-classified type
                     if device_type != "unknown":
                         await db.set_device_type(d.mac, device_type)
@@ -310,6 +310,7 @@ class BluehoodDaemon:
                     db_device, is_new = await db.upsert_device(
                         mac=device.mac,
                         vendor=device.vendor,
+                        friendly_name=device.name,
                         rssi=device.rssi,
                         service_uuids=device.service_uuids,
                         bt_type=device.bt_type,
