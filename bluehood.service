@@ -12,7 +12,7 @@ RestartSec=5
 NoNewPrivileges=false
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/danny/.local/share/bluehood /tmp
+ReadWritePaths=%h/.local/share/bluehood /tmp
 
 # Bluetooth requires some capabilities
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
