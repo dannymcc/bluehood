@@ -19,5 +19,18 @@ services:
 
     # Web dashboard available at http://localhost:8080
 
+    # Pre-flight check: verify BlueZ is available on the host before starting.
+    # If this fails, install BlueZ: sudo apt install bluez && sudo systemctl enable --now bluetooth
+    healthcheck:
+      test: >
+        sh -c 'dbus-send --system --dest=org.freedesktop.DBus
+        --type=method_call --print-reply /org/freedesktop/DBus
+        org.freedesktop.DBus.ListNames 2>/dev/null | grep -q org.bluez
+        || (echo "ERROR: BlueZ (org.bluez) not found on host. Install it with: sudo apt install bluez && sudo systemctl enable --now bluetooth" && exit 1)'
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
 volumes:
   bluehood-data:

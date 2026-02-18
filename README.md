@@ -97,6 +97,23 @@ Bluehood is a Bluetooth scanner that:
 
 ### Quick Start with Docker (Recommended)
 
+> **Prerequisites — Linux hosts only**
+>
+> Bluehood communicates with your Bluetooth adapter via BlueZ, the Linux Bluetooth stack. **BlueZ must be installed and running on the host before starting the container** — the Docker image itself does not include it.
+>
+> ```bash
+> # Debian / Ubuntu (including Ubuntu Server)
+> sudo apt install bluez
+> sudo systemctl enable --now bluetooth
+>
+> # Arch Linux
+> sudo pacman -S bluez bluez-utils
+> sudo systemctl enable --now bluetooth
+> ```
+>
+> Without BlueZ on the host you'll see an error like:
+> `BLE scan error: [org.freedesktop.DBus.Error.ServiceUnknown] The name org.bluez was not provided by any .service files`
+
 ```bash
 # Create a docker-compose.yml or download the one from this repo
 # Then start with Docker Compose
@@ -118,7 +135,7 @@ The web dashboard will be available at **http://localhost:8080**
 
 - Docker and Docker Compose
 - Linux host with Bluetooth adapter
-- BlueZ installed on the host (`apt install bluez` or `pacman -S bluez`)
+- BlueZ installed and running on the host (`sudo apt install bluez && sudo systemctl enable --now bluetooth`)
 
 > **Note**: Docker runs in privileged mode with host networking for Bluetooth access. This is required for BLE scanning.
 
@@ -322,8 +339,20 @@ Tracks how long devices spend in range by analyzing gaps between sightings. A co
 - Run with sudo if permission denied
 
 ### Docker issues
-- Ensure BlueZ is installed on the host (not just in container)
+
+**`BLE scan error: org.freedesktop.DBus.Error.ServiceUnknown` / `The name org.bluez was not provided`**
+
+BlueZ is not installed or not running on the host. Fix:
+```bash
+sudo apt install bluez          # Debian/Ubuntu
+sudo systemctl enable --now bluetooth
+docker compose restart
+```
+
+**General checklist:**
+- Ensure BlueZ is installed on the **host** (not just in the container)
 - Verify Bluetooth service is running: `systemctl status bluetooth`
+- Confirm your adapter is visible: `bluetoothctl list`
 
 ## Contributing
 
