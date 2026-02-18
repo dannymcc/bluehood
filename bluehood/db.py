@@ -759,8 +759,8 @@ async def get_dwell_time(mac: str, days: int = 30, gap_minutes: int = 15) -> dic
             # End current session, start new one
             duration = (session_end - session_start).total_seconds() / 60
             sessions.append({
-                "start": session_start.isoformat(),
-                "end": session_end.isoformat(),
+                "start": session_start.isoformat() + "Z",
+                "end": session_end.isoformat() + "Z",
                 "duration_minutes": round(duration, 1)
             })
             session_start = timestamps[i]
@@ -769,8 +769,8 @@ async def get_dwell_time(mac: str, days: int = 30, gap_minutes: int = 15) -> dic
     # Don't forget the last session
     duration = (session_end - session_start).total_seconds() / 60
     sessions.append({
-        "start": session_start.isoformat(),
-        "end": session_end.isoformat(),
+        "start": session_start.isoformat() + "Z",
+        "end": session_end.isoformat() + "Z",
         "duration_minutes": round(duration, 1)
     })
 
