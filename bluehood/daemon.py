@@ -166,8 +166,8 @@ class BluehoodDaemon:
                     "friendly_name": d.friendly_name,
                     "device_type": device_type,
                     "ignored": d.ignored,
-                    "first_seen": d.first_seen.isoformat() if d.first_seen else None,
-                    "last_seen": d.last_seen.isoformat() if d.last_seen else None,
+                    "first_seen": (d.first_seen.isoformat() + "Z") if d.first_seen else None,
+                    "last_seen": (d.last_seen.isoformat() + "Z") if d.last_seen else None,
                     "total_sightings": d.total_sightings,
                 })
 
@@ -214,7 +214,7 @@ class BluehoodDaemon:
                     "status": "ok",
                     "sightings": [
                         {
-                            "timestamp": s.timestamp.isoformat(),
+                            "timestamp": s.timestamp.isoformat() + "Z",
                             "rssi": s.rssi,
                         }
                         for s in sightings
