@@ -1332,7 +1332,7 @@ HTML_TEMPLATE = """
 
             tbody.innerHTML = sorted.map((d, index) => {
                 const typeClass = getTypeClass(d.device_type);
-                const lastSeen = formatLastSeen(d.last_seen);
+                const { text: lastSeen, tooltip: lastSeenTooltip } = formatLastSeen(d.last_seen);
                 const isRecent = isRecentlySeen(d.last_seen);
                 const watchedStar = d.watched ? '<span class="watched-star">★</span>' : '';
                 const isSelected = selectedMacs.has(d.mac);
@@ -1357,7 +1357,7 @@ HTML_TEMPLATE = """
                         '<td style="padding: 0.4rem 0.5rem;"><span class="type-badge ' + typeClass + '" style="font-size: 0.65rem; padding: 0.15rem 0.4rem;">' + watchedStar + d.type_icon + '</span></td>' +
                         '<td colspan="3" style="padding: 0.4rem 0.5rem; font-size: 0.75rem;">' + displayName + '</td>' +
                         '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;">' + d.total_sightings + '</td>' +
-                        '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;" class="' + (isRecent ? 'recent' : '') + '">' + lastSeen + '</td>' +
+                        '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;" class="' + (isRecent ? 'recent' : '') + '" title="' + lastSeenTooltip + '">' + lastSeen + '</td>' +
                         '<td style="padding: 0.4rem 0.5rem; font-size: 0.7rem;">' + groupHtml + '</td>' +
                         '</tr>';
                 }
@@ -1369,7 +1369,7 @@ HTML_TEMPLATE = """
                     '<td class="vendor-name">' + (d.vendor || '—') + '</td>' +
                     '<td class="device-name">' + (d.friendly_name ? obfuscateName(d.friendly_name) : '—') + '</td>' +
                     '<td class="sighting-count">' + d.total_sightings + '</td>' +
-                    '<td class="last-seen ' + (isRecent ? 'recent' : '') + '">' + lastSeen + '</td>' +
+                    '<td class="last-seen ' + (isRecent ? 'recent' : '') + '" title="' + lastSeenTooltip + '">' + lastSeen + '</td>' +
                     '<td class="group-name">' + groupHtml + '</td>' +
                     '</tr>';
             }).join('');
@@ -1382,14 +1382,25 @@ HTML_TEMPLATE = """
         }
 
         function formatLastSeen(isoString) {
-            if (!isoString) return '—';
+            if (!isoString) return { text: '—', tooltip: '' };
             const date = new Date(isoString);
             const now = new Date();
+            const tooltip = date.toLocaleString();
             const diffMins = Math.floor((now - date) / 60000);
-            if (diffMins < 1) return 'NOW';
-            if (diffMins < 60) return diffMins + 'm';
-            if (diffMins < 1440) return Math.floor(diffMins / 60) + 'h';
-            return date.toLocaleDateString();
+            let text;
+            if (diffMins < 1) text = 'NOW';
+            else if (diffMins < 60) text = diffMins + 'm ago';
+            else if (diffMins < 1440) {
+                const h = Math.floor(diffMins / 60);
+                const m = diffMins % 60;
+                text = m > 0 ? h + 'h ' + m + 'm ago' : h + 'h ago';
+            } else {
+                const diffDays = Math.floor(diffMins / 1440);
+                if (diffDays === 1) text = 'Yesterday ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                else if (diffDays < 7) text = diffDays + 'd ago';
+                else text = date.toLocaleDateString();
+            }
+            return { text, tooltip };
         }
 
         function isRecentlySeen(isoString) {
