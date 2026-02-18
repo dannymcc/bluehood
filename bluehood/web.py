@@ -849,6 +849,9 @@ HTML_TEMPLATE = """
                 <button class="filter-btn" id="screenshot-toggle" onclick="toggleScreenshotMode()" style="width: 100%; justify-content: center; margin-top: 0.5rem;">
                     📷 Screenshot Mode
                 </button>
+                <button class="filter-btn" id="click-to-open-toggle" onclick="toggleClickToOpen()" style="width: 100%; justify-content: center; margin-top: 0.5rem;">
+                    👆 Click to Open
+                </button>
             </div>
         </aside>
 
@@ -961,6 +964,7 @@ HTML_TEMPLATE = """
         let dateFilteredDevices = null;
         let compactView = localStorage.getItem('bluehood_compact_view') === 'true';
         let screenshotMode = localStorage.getItem('bluehood_screenshot_mode') === 'true';
+        let clickToOpen = localStorage.getItem('bluehood_click_to_open') === 'true';
         const defaultSortState = { column: 'last_seen', direction: 'asc' };
         let sortState = { ...defaultSortState };
         let selectedMacs = new Set();
@@ -994,6 +998,21 @@ HTML_TEMPLATE = """
                 btn.innerHTML = screenshotMode ? '📷 Screenshot Mode ON' : '📷 Screenshot Mode';
                 btn.style.background = screenshotMode ? 'var(--accent-red)' : '';
                 btn.style.color = screenshotMode ? 'white' : '';
+            }
+        }
+
+        function toggleClickToOpen() {
+            clickToOpen = !clickToOpen;
+            localStorage.setItem('bluehood_click_to_open', clickToOpen);
+            updateClickToOpenToggle();
+        }
+
+        function updateClickToOpenToggle() {
+            const btn = document.getElementById('click-to-open-toggle');
+            if (btn) {
+                btn.innerHTML = clickToOpen ? '👆 Click to Open ON' : '👆 Click to Open';
+                btn.style.background = clickToOpen ? 'var(--accent-blue)' : '';
+                btn.style.color = clickToOpen ? 'white' : '';
             }
         }
 
@@ -1238,6 +1257,11 @@ HTML_TEMPLATE = """
             if (event.target && event.target.closest('input.row-select-checkbox')) return;
             const isCtrl = event.ctrlKey || event.metaKey;
             const isShift = event.shiftKey;
+
+            if (clickToOpen && !isCtrl && !isShift) {
+                showDevice(mac);
+                return;
+            }
 
             if (isShift && lastSelectedIndex !== null && currentVisibleDevices.length > 0) {
                 const start = Math.max(0, Math.min(lastSelectedIndex, index));
@@ -1752,9 +1776,9 @@ HTML_TEMPLATE = """
         }
 
         // Filter handlers
-        document.querySelectorAll('.filter-btn').forEach(btn => {
+        document.querySelectorAll('.filter-btn[data-filter]').forEach(btn => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.filter-btn[data-filter]').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 currentFilter = btn.dataset.filter;
                 renderDevices();
@@ -1811,6 +1835,7 @@ HTML_TEMPLATE = """
 
         updateViewToggle();
         updateScreenshotToggle();
+        updateClickToOpenToggle();
         updateSortIndicators();
         loadGroupsForBulkSelect();
         updateSelectionUI();
