@@ -12,7 +12,7 @@ from typing import Optional
 from aiohttp import web
 
 from . import db
-from .classifier import classify_device, get_type_icon, get_type_label, get_all_types, is_randomized_mac, get_uuid_names
+from .classifier import classify_device, get_type_icon, get_type_label, get_all_types, is_randomized_mac, is_macos_uuid, get_uuid_names
 from .patterns import generate_hourly_heatmap, generate_daily_heatmap
 
 logger = logging.getLogger(__name__)
@@ -887,7 +887,7 @@ HTML_TEMPLATE = """
                         <tr>
                             <th class="select-col"><input type="checkbox" id="select-all-checkbox" class="row-select-checkbox" aria-label="Select all rows"></th>
                             <th class="sortable" data-sort="class">Class<span class="sort-indicator"></span></th>
-                            <th class="sortable" data-sort="mac">MAC Address<span class="sort-indicator"></span></th>
+                            <th class="sortable" data-sort="mac">Address<span class="sort-indicator"></span></th>
                             <th class="sortable" data-sort="vendor">Vendor<span class="sort-indicator"></span></th>
                             <th class="sortable" data-sort="identifier">Identifier<span class="sort-indicator"></span></th>
                             <th class="sortable" data-sort="sightings">Sightings<span class="sort-indicator"></span></th>
@@ -1016,8 +1016,16 @@ HTML_TEMPLATE = """
             }
         }
 
+        function isMacOSUUID(addr) {
+            return /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/.test(addr);
+        }
+
         function obfuscateMAC(mac) {
             if (!screenshotMode || !mac) return mac;
+            // Handle macOS UUID-format addresses
+            if (isMacOSUUID(mac)) {
+                return mac.substring(0, 8) + '-XXXX-XXXX-XXXX-XXXXXXXXXXXX';
+            }
             // Show first 2 octets, hide the rest: AA:BB:XX:XX:XX:XX
             const parts = mac.split(':');
             if (parts.length === 6) {
@@ -1351,7 +1359,11 @@ HTML_TEMPLATE = """
                 if (compactView) {
                     // Compact: Type, Name/MAC, Sightings, Last Seen, Group
                     const rawDisplayName = d.friendly_name || d.vendor || d.mac;
-                    const displayName = d.friendly_name ? obfuscateName(rawDisplayName) : (d.vendor ? rawDisplayName : obfuscateMAC(rawDisplayName));
+                    let displayName = d.friendly_name ? obfuscateName(rawDisplayName) : (d.vendor ? rawDisplayName : obfuscateMAC(rawDisplayName));
+                    // Truncate long macOS UUID addresses in compact view
+                    if (!d.friendly_name && !d.vendor && isMacOSUUID(d.mac)) {
+                        displayName = displayName.substring(0, 13) + '...';
+                    }
                     return '<tr class="' + rowClass + '" onclick="handleRowClick(event, \\'' + d.mac + '\\', ' + index + ')" ondblclick="showDevice(\\'' + d.mac + '\\')" style="height: auto;">' +
                         '<td class="select-col"><input type="checkbox" class="row-select-checkbox" ' + checkedAttr + ' onclick="toggleRowCheckbox(event, \\'' + d.mac + '\\', ' + index + ')"></td>' +
                         '<td style="padding: 0.4rem 0.5rem;"><span class="type-badge ' + typeClass + '" style="font-size: 0.65rem; padding: 0.15rem 0.4rem;">' + watchedStar + d.type_icon + '</span></td>' +
@@ -1365,7 +1377,7 @@ HTML_TEMPLATE = """
                 return '<tr class="' + rowClass + '" onclick="handleRowClick(event, \\'' + d.mac + '\\', ' + index + ')" ondblclick="showDevice(\\'' + d.mac + '\\')">' +
                     '<td class="select-col"><input type="checkbox" class="row-select-checkbox" ' + checkedAttr + ' onclick="toggleRowCheckbox(event, \\'' + d.mac + '\\', ' + index + ')"></td>' +
                     '<td><span class="type-badge ' + typeClass + '">' + watchedStar + d.type_icon + ' ' + d.type_label + '</span></td>' +
-                    '<td class="mac-addr">' + obfuscateMAC(d.mac) + '</td>' +
+                    '<td class="mac-addr" title="' + d.mac + '">' + (isMacOSUUID(d.mac) ? obfuscateMAC(d.mac).substring(0, 13) + '...' : obfuscateMAC(d.mac)) + '</td>' +
                     '<td class="vendor-name">' + (d.vendor || '—') + '</td>' +
                     '<td class="device-name">' + (d.friendly_name ? obfuscateName(d.friendly_name) : '—') + '</td>' +
                     '<td class="sighting-count">' + d.total_sightings + '</td>' +
@@ -1445,7 +1457,7 @@ HTML_TEMPLATE = """
                 '<button class="' + watchBtnClass + '" id="watch-btn" onclick="toggleWatch(\\'' + d.mac + '\\')">' + watchBtnText + '</button>' +
                 '</div>' +
                 '<div class="detail-grid">' +
-                '<div class="detail-item"><div class="detail-label">MAC Address</div><div class="detail-value mono">' + obfuscateMAC(d.mac) + '</div></div>' +
+                '<div class="detail-item"><div class="detail-label">Address</div><div class="detail-value mono" style="font-size:' + (isMacOSUUID(d.mac) ? '0.65rem' : '0.85rem') + '; word-break: break-all;">' + obfuscateMAC(d.mac) + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Classification</div><div class="detail-value">' + data.type_label + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Vendor OUI</div><div class="detail-value">' + (d.vendor || '—') + '</div></div>' +
                 '<div class="detail-item"><div class="detail-label">Proximity Zone</div><div class="detail-value" style="color: ' + proximityColor + '; text-transform: uppercase;">' + proximityZone + '</div></div>' +
@@ -1624,7 +1636,7 @@ HTML_TEMPLATE = """
                     return '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); cursor: pointer;" onclick="openDeviceModal(\\'' + c.mac + '\\')">' +
                         '<div style="flex: 1; min-width: 0;">' +
                         '<div style="font-size: 0.8rem; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + primaryName + '</div>' +
-                        '<div style="font-size: 0.65rem; color: var(--text-muted); font-family: var(--font-mono);">' + secondaryInfo + '</div>' +
+                        '<div style="font-size: 0.65rem; color: var(--text-muted); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + secondaryInfo + '</div>' +
                         '</div>' +
                         '<div style="display: flex; align-items: center; gap: 0.5rem; margin-left: 0.5rem;">' +
                         '<div style="width: 50px;">' + corrBar + '</div>' +
