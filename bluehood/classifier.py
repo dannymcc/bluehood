@@ -1,6 +1,22 @@
 """Device type classification based on vendor and patterns."""
 
+import re
 from typing import Optional
+
+# macOS CoreBluetooth provides UUIDs instead of real MAC addresses for privacy.
+# These are 36-character strings like "460649E9-2306-1FF2-1272-A8D9B9D9143D".
+_MACOS_UUID_RE = re.compile(
+    r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+)
+
+
+def is_macos_uuid(address: str) -> bool:
+    """Check if a device address is a macOS CoreBluetooth UUID.
+
+    macOS does not expose real MAC addresses for BLE devices. Instead,
+    CoreBluetooth assigns a per-device UUID that Bleak passes through.
+    """
+    return bool(_MACOS_UUID_RE.match(address))
 
 
 def is_randomized_mac(mac: str) -> bool:
@@ -8,7 +24,12 @@ def is_randomized_mac(mac: str) -> bool:
 
     Modern devices randomize their MAC addresses by setting the
     locally administered bit (bit 1 of first byte).
+
+    Returns False for macOS UUID-format addresses since the bit-checking
+    logic is not applicable to UUIDs.
     """
+    if is_macos_uuid(mac):
+        return False
     try:
         first_byte = int(mac.split(":")[0], 16)
         return bool(first_byte & 0x02)

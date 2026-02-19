@@ -134,8 +134,10 @@ The web dashboard will be available at **http://localhost:8080**
 #### Docker Requirements
 
 - Docker and Docker Compose
-- Linux host with Bluetooth adapter
+- Linux host with a **BLE-capable Bluetooth adapter** (Bluetooth 4.0+) that supports the **Central** role
 - BlueZ installed and running on the host (`sudo apt install bluez && sudo systemctl enable --now bluetooth`)
+
+> **Note**: Older adapters (Bluetooth 2.x/3.x) do not support BLE scanning. If your adapter lacks BLE Central role support, you will see: `No Bluetooth adapters with BLE 'central' role found`.
 
 > **Note**: Docker runs in privileged mode with host networking for Bluetooth access. This is required for BLE scanning.
 
@@ -145,6 +147,17 @@ The web dashboard will be available at **http://localhost:8080**
 |----------|---------|-------------|
 | `BLUEHOOD_ADAPTER` | auto | Bluetooth adapter (e.g., `hci0`) |
 | `BLUEHOOD_DATA_DIR` | `/data` | Database storage directory |
+
+### Bluetooth Adapter Requirements
+
+Bluehood requires a **BLE-capable Bluetooth adapter** (Bluetooth 4.0 or later) with **Central** role support. Older Bluetooth 2.x/3.x adapters do not support BLE scanning and will not work.
+
+If your adapter does not support the BLE Central role, Bluehood will exit with:
+```
+No Bluetooth adapters with BLE 'central' role found
+```
+
+You can check your adapter's capabilities with `bluetoothctl show` and look for `central` in the supported roles.
 
 ### Manual Installation (Linux)
 
@@ -334,6 +347,7 @@ Tracks how long devices spend in range by analyzing gaps between sightings. A co
 ## Troubleshooting
 
 ### No devices found
+- Ensure your adapter supports BLE (Bluetooth 4.0+) with the Central role — older adapters won't work
 - Ensure Bluetooth adapter is enabled: `bluetoothctl power on`
 - Check adapter is detected: `bluehood --list-adapters`
 - Run with sudo if permission denied
@@ -364,6 +378,8 @@ Contributions welcome! Please open an issue or PR on GitHub.
 - [@hatedabamboo](https://github.com/hatedabamboo) (Kirill Solovei) - Light theme support
 - [@krnltrp](https://github.com/krnltrp) - Web UI enhancements
 - [@jacobpretorius](https://github.com/jacobpretorius) (Jacob Pretorius) - CSV export JS fix (#14), click to open setting (#16)
+- [@unqualifiedkoala](https://github.com/unqualifiedkoala) - Documented BLE adapter requirements
+- [@dazzag24](https://github.com/dazzag24) - Reported macOS address format issue
 
 ## License
 

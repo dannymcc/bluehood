@@ -21,6 +21,7 @@ except ImportError:
 # Online API for vendor lookup fallback
 MACVENDORS_API_URL = "https://api.macvendors.com/"
 
+from .classifier import is_macos_uuid
 from .config import SCAN_DURATION, BLUETOOTH_ADAPTER, DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -173,7 +174,12 @@ class BluetoothScanner:
 
         The second-least-significant bit of the first byte indicates
         locally administered addresses (randomized for privacy).
+
+        Returns False for macOS UUID-format addresses since the
+        bit-checking logic is not applicable to UUIDs.
         """
+        if is_macos_uuid(mac):
+            return False
         try:
             first_byte = int(mac.split(":")[0], 16)
             return bool(first_byte & 0x02)  # Check bit 1
@@ -182,6 +188,10 @@ class BluetoothScanner:
 
     async def _get_vendor(self, mac: str) -> Optional[str]:
         """Look up vendor from MAC address OUI."""
+        # macOS UUIDs have no OUI - skip vendor lookup
+        if is_macos_uuid(mac):
+            return None
+
         # Skip randomized MACs - they won't have vendors
         if self._is_randomized_mac(mac):
             return None
