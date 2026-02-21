@@ -30,6 +30,7 @@ class BluehoodDaemon:
     def __init__(self, adapter: Optional[str] = None, web_port: Optional[int] = None):
         self.scanner = BluetoothScanner(adapter=adapter)
         self.running = False
+        self._stopping = False
         self.clients: list[asyncio.StreamWriter] = []
         self._server: asyncio.Server | None = None
         self._web_port = web_port
@@ -48,7 +49,7 @@ class BluehoodDaemon:
         await self._notifications.start()
 
         # Setup signal handlers
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, lambda: asyncio.create_task(self.stop()))
 
@@ -68,13 +69,19 @@ class BluehoodDaemon:
 
     async def stop(self) -> None:
         """Stop the daemon."""
+        if self._stopping:
+            return
+        self._stopping = True
         logger.info("Stopping bluehood daemon...")
         self.running = False
 
         # Close all client connections
-        for writer in self.clients:
-            writer.close()
-            await writer.wait_closed()
+        for writer in list(self.clients):
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
 
         # Close socket server
         if self._server:
@@ -104,8 +111,8 @@ class BluehoodDaemon:
             self._handle_client,
             path=str(SOCKET_PATH)
         )
-        # Make socket accessible
-        os.chmod(SOCKET_PATH, 0o666)
+        # Make socket accessible to owner and group only
+        os.chmod(SOCKET_PATH, 0o660)
         logger.info(f"Socket server listening at {SOCKET_PATH}")
 
     async def _handle_client(
@@ -136,7 +143,8 @@ class BluehoodDaemon:
         except asyncio.CancelledError:
             pass
         finally:
-            self.clients.remove(writer)
+            if writer in self.clients:
+                self.clients.remove(writer)
             writer.close()
             await writer.wait_closed()
             logger.info("TUI client disconnected")
@@ -343,7 +351,7 @@ class BluehoodDaemon:
     async def _notify_clients(self, event: dict) -> None:
         """Send an event to all connected clients."""
         data = json.dumps(event).encode() + b"\n"
-        for writer in self.clients:
+        for writer in list(self.clients):
             try:
                 writer.write(data)
                 await writer.drain()

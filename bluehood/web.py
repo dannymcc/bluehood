@@ -904,7 +904,7 @@ HTML_TEMPLATE = """
     </div>
 
     <footer class="footer">
-        BLUEHOOD v0.5.0 // Bluetooth Reconnaissance Framework // <a href="https://github.com/dannymcc/bluehood">Source</a> // <span class="kbd">?</span> Shortcuts
+        BLUEHOOD v0.2.0 // Bluetooth Reconnaissance Framework // <a href="https://github.com/dannymcc/bluehood">Source</a> // <span class="kbd">?</span> Shortcuts
     </footer>
 
     <!-- Target Detail Modal -->
@@ -1633,7 +1633,7 @@ HTML_TEMPLATE = """
                     const rawSecondaryInfo = c.friendly_name ? (c.vendor || c.mac) : c.mac;
                     const secondaryInfo = (c.friendly_name && c.vendor) ? rawSecondaryInfo : obfuscateMAC(rawSecondaryInfo);
                     const corrBar = '<div style="background: var(--accent-red); height: 4px; width: ' + c.correlation_score + '%; border-radius: 2px;"></div>';
-                    return '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); cursor: pointer;" onclick="openDeviceModal(\\'' + c.mac + '\\')">' +
+                    return '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); cursor: pointer;" onclick="showDevice(\\'' + c.mac + '\\')">' +
                         '<div style="flex: 1; min-width: 0;">' +
                         '<div style="font-size: 0.8rem; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + primaryName + '</div>' +
                         '<div style="font-size: 0.65rem; color: var(--text-muted); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + secondaryInfo + '</div>' +
@@ -2074,7 +2074,7 @@ SETTINGS_TEMPLATE = """
         </div>
     </main>
 
-    <footer class="footer">BLUEHOOD v0.5.0 // <a href="https://github.com/dannymcc/bluehood">Source</a></footer>
+    <footer class="footer">BLUEHOOD v0.2.0 // <a href="https://github.com/dannymcc/bluehood">Source</a></footer>
 
     <script>
         function applyTheme(theme) {
@@ -2382,7 +2382,7 @@ ABOUT_TEMPLATE = """
             </div>
         </div>
 
-        <div class="version">v0.5.0 // BUILD 2026.01</div>
+        <div class="version">v0.2.0 // BUILD 2026.01</div>
     </main>
 
     <footer class="footer">BLUEHOOD // <a href="https://github.com/dannymcc/bluehood">Source Repository</a></footer>
@@ -2522,32 +2522,48 @@ LOGIN_TEMPLATE = """
 
 
 def hash_password(password: str) -> str:
-    """Hash a password using SHA-256 with salt."""
-    salt = secrets.token_hex(16)
-    hash_obj = hashlib.sha256((salt + password).encode())
-    return f"{salt}:{hash_obj.hexdigest()}"
+    """Hash a password using PBKDF2-SHA256 with salt and key stretching."""
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations=600_000)
+    return f"{salt.hex()}:{dk.hex()}"
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    """Verify a password against a stored hash."""
+    """Verify a password against a stored PBKDF2 hash."""
     if not stored_hash or ":" not in stored_hash:
         return False
-    salt, hash_value = stored_hash.split(":", 1)
-    hash_obj = hashlib.sha256((salt + password).encode())
-    return hash_obj.hexdigest() == hash_value
+    salt_hex, hash_hex = stored_hash.split(":", 1)
+    try:
+        salt = bytes.fromhex(salt_hex)
+    except ValueError:
+        return False
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations=600_000)
+    return secrets.compare_digest(dk.hex(), hash_hex)
 
 
 class WebServer:
     """Web server for Bluehood dashboard."""
 
+    # Paths that do not require authentication
+    _AUTH_EXEMPT_PATHS = {"/login", "/api/auth/login", "/api/auth/status"}
+
     def __init__(self, host: str = "0.0.0.0", port: int = 8080, notifications=None):
         self.host = host
         self.port = port
-        self.app = web.Application()
+        self.app = web.Application(middlewares=[self._auth_middleware])
         self._notifications = notifications
         self._sessions: dict[str, datetime] = {}  # session_token -> expiry
         self._session_duration = timedelta(hours=24)
         self._setup_routes()
+
+    @web.middleware
+    async def _auth_middleware(self, request: web.Request, handler):
+        """Enforce authentication on all routes except login-related paths."""
+        if request.path not in self._AUTH_EXEMPT_PATHS:
+            auth_redirect = await self._require_auth(request)
+            if auth_redirect is not None:
+                return auth_redirect
+        return await handler(request)
 
     def _setup_routes(self):
         self.app.router.add_get("/", self.index)
@@ -2605,16 +2621,15 @@ class WebServer:
         return self._validate_session(token)
 
     async def _require_auth(self, request: web.Request) -> Optional[web.Response]:
-        """Return a redirect response if auth is required but not present."""
+        """Return a redirect/error response if auth is required but not present."""
         if not await self._check_auth(request):
             if request.path.startswith("/api/"):
                 return web.json_response({"error": "Unauthorized"}, status=401)
-            raise web.HTTPFound("/login")
+            return web.HTTPFound("/login")
         return None
 
     async def index(self, request: web.Request) -> web.Response:
         """Serve the main dashboard."""
-        await self._require_auth(request)
         return web.Response(text=HTML_TEMPLATE, content_type="text/html")
 
     async def login_page(self, request: web.Request) -> web.Response:
@@ -2628,12 +2643,10 @@ class WebServer:
 
     async def settings_page(self, request: web.Request) -> web.Response:
         """Serve the settings page."""
-        await self._require_auth(request)
         return web.Response(text=SETTINGS_TEMPLATE, content_type="text/html")
 
     async def about_page(self, request: web.Request) -> web.Response:
         """Serve the about page."""
-        await self._require_auth(request)
         return web.Response(text=ABOUT_TEMPLATE, content_type="text/html")
 
     async def api_devices(self, request: web.Request) -> web.Response:

@@ -288,7 +288,6 @@ SERVICE_UUID_PATTERNS = [
     ("0000feab", TYPE_SMART_HOME),  # Nokia beacons
 
     # Trackers / Finders
-    ("0000fe2c", TYPE_SMART_HOME),  # Tile tracker
     ("0000feed", TYPE_SMART_HOME),  # Tile
     ("0000febe", TYPE_SMART_HOME),  # Bose
     ("0000feec", TYPE_SMART_HOME),  # Tile

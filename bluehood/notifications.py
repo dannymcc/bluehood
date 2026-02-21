@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import aiohttp
@@ -107,7 +107,7 @@ class NotificationManager:
         if not self._settings or not self._settings.ntfy_enabled:
             return
 
-        now = datetime.now()
+        now = datetime.now(tz=timezone.utc)
 
         # Check for new device notification
         if is_new and self._settings.notify_new_device:
@@ -153,7 +153,7 @@ class NotificationManager:
         if not self._settings.notify_watched_leave:
             return
 
-        now = datetime.now()
+        now = datetime.now(tz=timezone.utc)
         threshold = timedelta(minutes=self._settings.watched_absence_minutes)
 
         # Get all watched devices
@@ -190,7 +190,8 @@ class NotificationManager:
     def _format_duration(self, minutes: float) -> str:
         """Format a duration in minutes to a human-readable string."""
         if minutes < 60:
-            return f"{int(minutes)} minutes"
+            m = int(minutes)
+            return f"{m} minute{'s' if m != 1 else ''}"
         elif minutes < 1440:
             hours = minutes / 60
             return f"{hours:.1f} hours"
@@ -201,7 +202,7 @@ class NotificationManager:
     def update_watched_state(self, mac: str, watched: bool) -> None:
         """Update internal state when a device's watched status changes."""
         if watched:
-            self._watched_last_seen[mac] = datetime.now()
+            self._watched_last_seen[mac] = datetime.now(tz=timezone.utc)
         else:
             self._watched_last_seen.pop(mac, None)
             self._watched_last_seen.pop(f"notified_absent_{mac}", None)

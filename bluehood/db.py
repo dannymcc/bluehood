@@ -2,7 +2,7 @@
 
 import json
 import aiosqlite
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from dataclasses import dataclass
 
@@ -200,7 +200,7 @@ async def upsert_device(
 
     Returns tuple of (device, is_new) where is_new indicates first sighting.
     """
-    now = datetime.now()
+    now = datetime.now(tz=timezone.utc)
     uuids_json = json.dumps(service_uuids) if service_uuids else None
 
     async with aiosqlite.connect(DB_PATH) as db:
