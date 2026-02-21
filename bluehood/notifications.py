@@ -190,7 +190,8 @@ class NotificationManager:
     def _format_duration(self, minutes: float) -> str:
         """Format a duration in minutes to a human-readable string."""
         if minutes < 60:
-            return f"{int(minutes)} minutes"
+            m = int(minutes)
+            return f"{m} minute{'s' if m != 1 else ''}"
         elif minutes < 1440:
             hours = minutes / 60
             return f"{hours:.1f} hours"

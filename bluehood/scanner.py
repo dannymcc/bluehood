@@ -197,8 +197,8 @@ class BluetoothScanner:
         if self._is_randomized_mac(mac):
             return None
 
-        # Check cache first - only return if we have a successful lookup
-        if mac in self._vendor_cache and self._vendor_cache[mac] is not None:
+        # Check cache first (includes negative results)
+        if mac in self._vendor_cache:
             return self._vendor_cache[mac]
 
         vendor = None
@@ -218,8 +218,8 @@ class BluetoothScanner:
         if vendor is None:
             vendor = await self._get_vendor_online(mac)
 
-        if vendor:
-            self._vendor_cache[mac] = vendor
+        # Cache both positive and negative results to avoid repeated lookups
+        self._vendor_cache[mac] = vendor
 
         return vendor
 
