@@ -478,7 +478,7 @@ HTML_TEMPLATE = """
 
         .device-table tr:last-child td { border-bottom: none; }
 
-        .device-table tr { cursor: pointer; }
+        .device-table tr { cursor: pointer; user-select: none; }
 
         .bulk-select {
             min-width: 140px;
@@ -970,6 +970,7 @@ HTML_TEMPLATE = """
         let selectedMacs = new Set();
         let lastSelectedIndex = null;
         let currentVisibleDevices = [];
+        let rowClickTimer = null;
 
         function toggleViewMode() {
             compactView = !compactView;
@@ -1294,7 +1295,11 @@ HTML_TEMPLATE = """
             }
 
             lastSelectedIndex = index;
-            renderDevices();
+            // Delay renderDevices so the dblclick event can fire on the original
+            // <tr> element before innerHTML replaces it. Without this delay,
+            // the first click destroys the row and dblclick never fires.
+            if (rowClickTimer) clearTimeout(rowClickTimer);
+            rowClickTimer = setTimeout(() => { rowClickTimer = null; renderDevices(); }, 250);
         }
 
         function getContrastColor(hexColor) {
@@ -1421,6 +1426,9 @@ HTML_TEMPLATE = """
         }
 
         async function showDevice(mac) {
+            // Cancel any pending single-click re-render so it doesn't
+            // disrupt the modal that the double-click is about to open.
+            if (rowClickTimer) { clearTimeout(rowClickTimer); rowClickTimer = null; }
             try {
                 const response = await fetch('/api/device/' + encodeURIComponent(mac));
                 const data = await response.json();
