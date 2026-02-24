@@ -16,7 +16,6 @@ from .config import SCAN_INTERVAL, SOCKET_PATH, METRICS_PORT
 from .scanner import BluetoothScanner, ScannedDevice, list_adapters
 from .web import WebServer
 from .notifications import NotificationManager
-from .prometheus import MetricsExporter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +36,7 @@ class BluehoodDaemon:
         self._web_port = web_port
         self._web_server: WebServer | None = None
         self._notifications = NotificationManager()
-        self._metrics: MetricsExporter | None = None
+        self._metrics = None
         self._metrics_port = metrics_port
 
     async def start(self) -> None:
@@ -65,10 +64,15 @@ class BluehoodDaemon:
             await self._web_server.start()
             logger.info(f"Web dashboard available at http://0.0.0.0:{self._web_port}")
 
-        # Start Prometheus metrics exporter
+        # Start Prometheus metrics exporter (requires `pip install bluehood[metrics]`)
         if self._metrics_port:
-            self._metrics = MetricsExporter(port=self._metrics_port, version=__version__)
-            self._metrics.start()
+            try:
+                from .prometheus import MetricsExporter
+                self._metrics = MetricsExporter(port=self._metrics_port, version=__version__)
+                self._metrics.start()
+            except ImportError:
+                logger.error("prometheus-client not installed. Install with: pip install bluehood[metrics]")
+                self._metrics = None
 
         # Start scanning and absence checking
         self.running = True
