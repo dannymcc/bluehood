@@ -145,7 +145,8 @@ The web dashboard will be available at **http://localhost:8080**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BLUEHOOD_ADAPTER` | auto | Bluetooth adapter (e.g., `hci0`) |
+| `BLUEHOOD_ADAPTER` | auto | Bluetooth adapter for BLE scanning (e.g., `hci0`) |
+| `BLUEHOOD_CLASSIC_ADAPTER` | same as `BLUEHOOD_ADAPTER` | Separate adapter for classic Bluetooth scanning (e.g., `hci1`). When set to a different adapter, BLE and classic scans run concurrently. |
 | `BLUEHOOD_DATA_DIR` | `/data` | Database storage directory |
 
 ### Bluetooth Adapter Requirements
@@ -231,6 +232,9 @@ bluehood --port 9000
 
 # Use a specific Bluetooth adapter
 bluehood --adapter hci1
+
+# Use separate adapters for BLE and classic scanning (concurrent)
+bluehood --adapter hci0 --classic-adapter hci1
 
 # List available adapters
 bluehood --list-adapters

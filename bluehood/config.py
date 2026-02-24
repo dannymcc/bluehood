@@ -21,3 +21,8 @@ SCAN_DURATION = 5
 
 # Bluetooth adapter (None = auto-select, or specify like "hci0")
 BLUETOOTH_ADAPTER = os.environ.get("BLUEHOOD_ADAPTER", None)
+
+# Separate adapter for classic Bluetooth inquiry scans (None = use same as BLE).
+# Setting this to a different adapter (e.g. a USB dongle) allows BLE and classic
+# scans to run concurrently without adapter contention.
+CLASSIC_BLUETOOTH_ADAPTER = os.environ.get("BLUEHOOD_CLASSIC_ADAPTER", None)

@@ -14,8 +14,11 @@ services:
       - bluehood-data:/data
 
     # Optional: specify Bluetooth adapter (default: auto-detect)
+    # Set BLUEHOOD_CLASSIC_ADAPTER to a different adapter (e.g. a USB dongle)
+    # to run BLE and classic scans concurrently without adapter contention.
     # environment:
     #   - BLUEHOOD_ADAPTER=hci0
+    #   - BLUEHOOD_CLASSIC_ADAPTER=hci1
 
     # Web dashboard available at http://localhost:8080
 
