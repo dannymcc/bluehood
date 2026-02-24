@@ -27,8 +27,9 @@ RUN mkdir -p /data && chown bluehood:bluehood /data
 ENV BLUEHOOD_DATA_DIR=/data
 ENV PYTHONUNBUFFERED=1
 
-# Expose web dashboard port
+# Expose web dashboard and metrics ports
 EXPOSE 8080
+EXPOSE 9199
 
 # Run as bluehood user
 USER bluehood

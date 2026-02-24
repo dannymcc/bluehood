@@ -147,6 +147,7 @@ The web dashboard will be available at **http://localhost:8080**
 |----------|---------|-------------|
 | `BLUEHOOD_ADAPTER` | auto | Bluetooth adapter (e.g., `hci0`) |
 | `BLUEHOOD_DATA_DIR` | `/data` | Database storage directory |
+| `BLUEHOOD_METRICS_PORT` | disabled | Prometheus metrics port (e.g., `9199`) |
 
 ### Bluetooth Adapter Requirements
 
@@ -237,6 +238,9 @@ bluehood --list-adapters
 
 # Disable web dashboard (scanning only)
 bluehood --no-web
+
+# Enable Prometheus metrics exporter on port 9199
+bluehood --metrics-port 9199
 ```
 
 ## Web Dashboard
@@ -343,6 +347,37 @@ Based on RSSI signal strength, devices are classified into proximity zones:
 ### Dwell Time Analysis
 
 Tracks how long devices spend in range by analyzing gaps between sightings. A configurable gap threshold (default 15 minutes) determines when a new "session" begins.
+
+## Prometheus Metrics
+
+Bluehood can expose metrics for Prometheus scraping. Enable by setting the `BLUEHOOD_METRICS_PORT` environment variable or the `--metrics-port` CLI flag.
+
+```bash
+# Via environment variable
+export BLUEHOOD_METRICS_PORT=9199
+
+# Via CLI
+bluehood --metrics-port 9199
+```
+
+Metrics are served at `http://host:9199/metrics`.
+
+### Available Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `bluehood_scans_total` | Counter | Total scan cycles completed |
+| `bluehood_scan_errors_total` | Counter | Scan errors (label: `scan_type`) |
+| `bluehood_sightings_total` | Counter | Total device sightings recorded |
+| `bluehood_new_devices_total` | Counter | New unique devices discovered |
+| `bluehood_last_scan_devices` | Gauge | Devices in last scan (label: `scan_type`) |
+| `bluehood_devices_total` | Gauge | Unique devices in DB (label: `bt_type`) |
+| `bluehood_devices_active` | Gauge | Devices seen in last 5 minutes |
+| `bluehood_devices_watched` | Gauge | Watched device count |
+| `bluehood_devices_ignored` | Gauge | Ignored device count |
+| `bluehood_scan_duration_seconds` | Histogram | Scan cycle duration |
+| `bluehood_device_rssi_dbm` | Histogram | RSSI distribution of BLE devices |
+| `bluehood_build_info` | Info | Version information |
 
 ## Troubleshooting
 
