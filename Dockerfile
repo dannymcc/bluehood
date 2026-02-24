@@ -23,6 +23,12 @@ RUN pip install --no-cache-dir -e .
 # Create data directory for database and cache
 RUN mkdir -p /data && chown bluehood:bluehood /data
 
+# Bundle MAC vendor database at build time as fallback
+RUN python -c "from mac_vendor_lookup import MacLookup; MacLookup().update_vendors()" \
+    && cp /root/.cache/mac-vendors.txt /data/mac-vendors.txt \
+    && chown bluehood:bluehood /data/mac-vendors.txt \
+    || echo "Warning: could not bundle vendor DB"
+
 # Environment variables
 ENV BLUEHOOD_DATA_DIR=/data
 ENV PYTHONUNBUFFERED=1

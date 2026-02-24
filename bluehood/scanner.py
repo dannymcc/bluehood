@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
+import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -140,6 +142,10 @@ def list_adapters() -> list[BluetoothAdapter]:
     return adapters
 
 
+VENDOR_DB_MAX_AGE_DAYS = 7
+VENDOR_DB_UPDATE_TIMEOUT = 30
+
+
 class BluetoothScanner:
     """Bluetooth LE scanner."""
 
@@ -148,26 +154,54 @@ class BluetoothScanner:
         self._mac_lookup: Optional[AsyncMacLookup] = None
         self._vendor_cache: dict[str, Optional[str]] = {}
         self._vendors_updated = False
+        self._vendor_update_task: Optional[asyncio.Task] = None
 
-    async def _ensure_vendor_db(self) -> None:
-        """Ensure vendor database is up to date."""
+    def _is_vendor_db_fresh(self) -> bool:
+        """Check if the cached vendor DB exists and is less than 7 days old."""
+        cache_path = BaseMacLookup.cache_path if HAS_MAC_LOOKUP else None
+        if not cache_path or not os.path.exists(cache_path):
+            return False
+        age_days = (time.time() - os.path.getmtime(cache_path)) / 86400
+        return age_days < VENDOR_DB_MAX_AGE_DAYS
+
+    def _start_vendor_db_update(self) -> None:
+        """Kick off a background vendor DB update (never blocks scanning)."""
         if self._vendors_updated or not HAS_MAC_LOOKUP:
             return
+        if self._vendor_update_task and not self._vendor_update_task.done():
+            return
 
+        if self._is_vendor_db_fresh():
+            logger.info("MAC vendor database is up to date (cached)")
+            self._vendors_updated = True
+            return
+
+        self._vendor_update_task = asyncio.create_task(self._update_vendor_db())
+
+    async def _update_vendor_db(self) -> None:
+        """Download vendor database in the background with a timeout."""
         try:
-            # Run the sync update in a thread pool to avoid event loop conflict
             logger.info("Updating MAC vendor database...")
 
             def update_sync():
                 mac_lookup = MacLookup()
                 mac_lookup.update_vendors()
 
-            await asyncio.to_thread(update_sync)
+            await asyncio.wait_for(
+                asyncio.to_thread(update_sync),
+                timeout=VENDOR_DB_UPDATE_TIMEOUT,
+            )
             self._vendors_updated = True
             logger.info("MAC vendor database updated")
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"MAC vendor database update timed out ({VENDOR_DB_UPDATE_TIMEOUT}s), "
+                "using cached/bundled data"
+            )
+            self._vendors_updated = True
         except Exception as e:
             logger.warning(f"Could not update vendor database: {e}")
-            self._vendors_updated = True  # Don't retry
+            self._vendors_updated = True
 
     def _is_randomized_mac(self, mac: str) -> bool:
         """Check if MAC address is locally administered (randomized).
@@ -206,7 +240,7 @@ class BluetoothScanner:
         if HAS_MAC_LOOKUP:
             try:
                 if self._mac_lookup is None:
-                    await self._ensure_vendor_db()
+                    self._start_vendor_db_update()
                     self._mac_lookup = AsyncMacLookup()
 
                 vendor = await self._mac_lookup.lookup(mac)
