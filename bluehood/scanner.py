@@ -273,7 +273,13 @@ class BluetoothScanner:
             if self.adapter:
                 kwargs["adapter"] = self.adapter
 
-            discovered = await BleakScanner.discover(**kwargs)
+            # Wrap in wait_for as a hard deadline — bleak's timeout parameter
+            # only controls the scan window duration, not the underlying D-Bus
+            # call which can block indefinitely if the adapter is busy.
+            discovered = await asyncio.wait_for(
+                BleakScanner.discover(**kwargs),
+                timeout=duration + 10,
+            )
 
             for device, adv_data in discovered.values():
                 mac = device.address
@@ -293,6 +299,8 @@ class BluetoothScanner:
 
             logger.debug(f"BLE scan: found {len(devices)} devices")
 
+        except asyncio.TimeoutError:
+            logger.warning("BLE scan timed out (adapter may be busy)")
         except Exception as e:
             logger.error(f"BLE scan error: {e}")
 
@@ -385,22 +393,27 @@ class BluetoothScanner:
             return None
 
     async def scan(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
-        """Perform both BLE and classic Bluetooth scans."""
-        # Run both scans concurrently
-        ble_task = asyncio.create_task(self.scan_ble(duration))
-        classic_task = asyncio.create_task(self.scan_classic())
+        """Perform both BLE and classic Bluetooth scans.
 
-        ble_devices, classic_devices = await asyncio.gather(
-            ble_task, classic_task, return_exceptions=True
-        )
+        Scans run sequentially (BLE first, then classic) to avoid adapter
+        contention on single-adapter devices. Running them concurrently causes
+        the classic inquiry (hcitool inq) to lock the adapter in INQUIRY mode,
+        blocking BleakScanner.discover() indefinitely via D-Bus.
 
-        # Handle any exceptions
-        if isinstance(ble_devices, Exception):
-            logger.error(f"BLE scan failed: {ble_devices}")
-            ble_devices = []
-        if isinstance(classic_devices, Exception):
-            logger.debug(f"Classic scan failed: {classic_devices}")
-            classic_devices = []
+        See: https://github.com/dannymcc/bluehood/issues/30
+        """
+        ble_devices: list[ScannedDevice] = []
+        classic_devices: list[ScannedDevice] = []
+
+        try:
+            ble_devices = await self.scan_ble(duration)
+        except Exception as e:
+            logger.error(f"BLE scan failed: {e}")
+
+        try:
+            classic_devices = await self.scan_classic()
+        except Exception as e:
+            logger.debug(f"Classic scan failed: {e}")
 
         # Merge results, preferring BLE data if device seen in both
         seen_macs = set()
