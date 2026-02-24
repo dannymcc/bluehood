@@ -649,6 +649,7 @@
             "fillOpacity": 20,
             "lineWidth": 2
           },
+          "min": 0,
           "unit": "short"
         }
       },
@@ -670,8 +671,8 @@
       },
       "targets": [
         {
-          "expr": "rate(bluehood_scan_errors_total{job=\"bluehood\"}[5m]) * 60",
-          "legendFormat": "{{scan_type}} errors/min",
+          "expr": "(rate(bluehood_scan_errors_total{job=\"bluehood\"}[5m]) * 60) or vector(0)",
+          "legendFormat": "errors/min",
           "refId": "A"
         }
       ],
