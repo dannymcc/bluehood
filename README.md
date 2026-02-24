@@ -379,6 +379,17 @@ Metrics are served at `http://host:9199/metrics`.
 | `bluehood_device_rssi_dbm` | Histogram | RSSI distribution of BLE devices |
 | `bluehood_build_info` | Info | Version information |
 
+### Grafana Dashboard
+
+A ready-to-import Grafana dashboard is included at [`grafana/bluehood-dashboard.json`](grafana/bluehood-dashboard.json). Import it via the Grafana UI (Dashboards > Import) or the API:
+
+```bash
+curl -X POST "http://localhost:3000/api/dashboards/db" \
+  -H "Authorization: Bearer <your-api-key>" \
+  -H "Content-Type: application/json" \
+  -d "{\"dashboard\": $(cat grafana/bluehood-dashboard.json), \"overwrite\": true}"
+```
+
 ## Troubleshooting
 
 ### No devices found
