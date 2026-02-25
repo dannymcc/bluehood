@@ -145,6 +145,8 @@ def list_adapters() -> list[BluetoothAdapter]:
 VENDOR_DB_MAX_AGE_DAYS = 7
 VENDOR_DB_UPDATE_TIMEOUT = 30
 
+ADAPTER_RESET_THRESHOLD = 3
+
 
 class BluetoothScanner:
     """Bluetooth LE scanner."""
@@ -155,6 +157,7 @@ class BluetoothScanner:
         self._vendor_cache: dict[str, Optional[str]] = {}
         self._vendors_updated = False
         self._vendor_update_task: Optional[asyncio.Task] = None
+        self._consecutive_ble_failures = 0
 
     def _is_vendor_db_fresh(self) -> bool:
         """Check if the cached vendor DB exists and is less than 7 days old."""
@@ -294,12 +297,66 @@ class BluetoothScanner:
             logger.debug(f"Vendor API error for {oui}: {e}")
             return None
 
+    async def _try_stop_discovery(self) -> bool:
+        """Try to clear a stuck BlueZ discovery session via bluetoothctl."""
+        adapter = self.adapter or "hci0"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bluetoothctl", "scan", "off",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+            logger.info(f"Cleared stuck BlueZ discovery via bluetoothctl")
+            return True
+        except Exception as e:
+            logger.debug(f"bluetoothctl scan off failed: {e}")
+            return False
+
+    async def _reset_adapter(self) -> bool:
+        """Reset the Bluetooth adapter to recover from stuck states."""
+        adapter = self.adapter or "hci0"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "hciconfig", adapter, "reset",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+            if proc.returncode == 0:
+                logger.warning(f"Reset Bluetooth adapter {adapter}")
+                await asyncio.sleep(2)
+                return True
+            else:
+                logger.error(f"Adapter reset failed: {stderr.decode().strip()}")
+                return False
+        except Exception as e:
+            logger.error(f"Adapter reset error: {e}")
+            return False
+
+    async def _recover_ble(self) -> None:
+        """Attempt to recover BLE scanning after consecutive failures."""
+        if self._consecutive_ble_failures < ADAPTER_RESET_THRESHOLD:
+            return
+
+        logger.warning(
+            f"BLE scan failed {self._consecutive_ble_failures} times consecutively, "
+            "attempting recovery"
+        )
+        if await self._try_stop_discovery():
+            await asyncio.sleep(1)
+            return
+
+        await self._reset_adapter()
+
     async def scan_ble(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
         """Perform a Bluetooth LE scan."""
         devices: list[ScannedDevice] = []
 
+        if self._consecutive_ble_failures >= ADAPTER_RESET_THRESHOLD:
+            await self._recover_ble()
+
         try:
-            # Build scanner kwargs
             kwargs = {
                 "timeout": duration,
                 "return_adv": True,
@@ -313,7 +370,6 @@ class BluetoothScanner:
                 mac = device.address
                 vendor = await self._get_vendor(mac)
 
-                # Capture service UUIDs for device fingerprinting
                 service_uuids = list(adv_data.service_uuids) if adv_data.service_uuids else []
 
                 devices.append(ScannedDevice(
@@ -326,9 +382,18 @@ class BluetoothScanner:
                 ))
 
             logger.debug(f"BLE scan: found {len(devices)} devices")
+            self._consecutive_ble_failures = 0
 
         except Exception as e:
-            logger.error(f"BLE scan error: {e}")
+            self._consecutive_ble_failures += 1
+            is_in_progress = "InProgress" in str(e) or "already in progress" in str(e)
+            if is_in_progress:
+                logger.error(
+                    f"BLE scan error: {e} "
+                    f"(failure {self._consecutive_ble_failures}/{ADAPTER_RESET_THRESHOLD})"
+                )
+            else:
+                logger.error(f"BLE scan error: {e}")
 
         return devices
 
