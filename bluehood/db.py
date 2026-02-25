@@ -2,7 +2,7 @@
 
 import json
 import aiosqlite
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass
 
@@ -103,6 +103,19 @@ CREATE INDEX IF NOT EXISTS idx_sightings_mac_time ON sightings(mac, timestamp);
 CREATE INDEX IF NOT EXISTS idx_sightings_timestamp ON sightings(timestamp);
 """
 
+_CANONICAL_MAC_GLOB = (
+    "[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:"
+    "[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]"
+)
+_RANDOMIZED_SECOND_NIBBLES = ("2", "3", "6", "7", "a", "b", "e", "f")
+_DEVICE_FILTER_TYPES = {
+    "phone": ("phone",),
+    "laptop": ("laptop", "computer"),
+    "audio": ("audio", "speaker"),
+    "smart": ("smart",),
+    "unknown": ("unknown",),
+}
+
 
 async def init_db() -> None:
     """Initialize the database schema."""
@@ -185,6 +198,197 @@ async def get_all_devices(include_ignored: bool = True) -> list[Device]:
         async with db.execute(query) as cursor:
             rows = await cursor.fetchall()
             return [_parse_device_row(row) for row in rows]
+
+
+def _randomized_mac_sql(column: str) -> str:
+    """SQL expression for locally-administered (randomized) MAC addresses."""
+    nibbles = ", ".join(f"'{n}'" for n in _RANDOMIZED_SECOND_NIBBLES)
+    return (
+        f"({column} GLOB '{_CANONICAL_MAC_GLOB}' "
+        f"AND lower(substr({column}, 2, 1)) IN ({nibbles}))"
+    )
+
+
+def _build_device_query_filters(
+    include_ignored: bool,
+    device_filter: str,
+    search: Optional[str],
+    exclude_randomized: bool,
+) -> tuple[str, list]:
+    """Build WHERE clause and parameters for device list queries."""
+    conditions: list[str] = []
+    params: list = []
+
+    if not include_ignored:
+        conditions.append("d.ignored = 0")
+
+    if exclude_randomized:
+        conditions.append(f"NOT {_randomized_mac_sql('d.mac')}")
+
+    filter_key = (device_filter or "all").strip().lower()
+    if filter_key == "watched":
+        conditions.append("d.watched = 1")
+    elif filter_key in _DEVICE_FILTER_TYPES:
+        filter_types = _DEVICE_FILTER_TYPES[filter_key]
+        placeholders = ", ".join("?" for _ in filter_types)
+        conditions.append(f"COALESCE(d.device_type, 'unknown') IN ({placeholders})")
+        params.extend(filter_types)
+
+    search_value = (search or "").strip()
+    if search_value:
+        wildcard = f"%{search_value}%"
+        conditions.append(
+            "(d.mac LIKE ? OR COALESCE(d.vendor, '') LIKE ? OR COALESCE(d.friendly_name, '') LIKE ?)"
+        )
+        params.extend([wildcard, wildcard, wildcard])
+
+    where_clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    return where_clause, params
+
+
+async def get_devices_page(
+    page: int = 1,
+    page_size: int = 100,
+    include_ignored: bool = True,
+    device_filter: str = "all",
+    search: Optional[str] = None,
+    sort_column: str = "last_seen",
+    sort_direction: str = "desc",
+    exclude_randomized: bool = True,
+) -> tuple[list[Device], int]:
+    """Get a single page of devices and total count for the current query."""
+    safe_page = max(1, page)
+    safe_page_size = max(1, min(page_size, 500))
+    offset = (safe_page - 1) * safe_page_size
+
+    sort_map = {
+        "class": "COALESCE(d.device_type, 'unknown')",
+        "mac": "d.mac",
+        "vendor": "COALESCE(d.vendor, '')",
+        "identifier": "COALESCE(d.friendly_name, '')",
+        "sightings": "d.total_sightings",
+        "last_seen": "COALESCE(d.last_seen, '')",
+        "group": "COALESCE(g.name, '')",
+    }
+    sort_expr = sort_map.get(sort_column, sort_map["last_seen"])
+    direction = "ASC" if str(sort_direction).lower() == "asc" else "DESC"
+
+    where_clause, params = _build_device_query_filters(
+        include_ignored=include_ignored,
+        device_filter=device_filter,
+        search=search,
+        exclude_randomized=exclude_randomized,
+    )
+
+    base_query = "FROM devices d LEFT JOIN device_groups g ON g.id = d.group_id"
+    order_clause = f" ORDER BY {sort_expr} {direction}, d.mac ASC"
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        async with db.execute(
+            f"SELECT COUNT(*) AS total {base_query}{where_clause}",
+            params,
+        ) as cursor:
+            count_row = await cursor.fetchone()
+            total = int(count_row["total"]) if count_row else 0
+
+        page_params = [*params, safe_page_size, offset]
+        async with db.execute(
+            f"SELECT d.* {base_query}{where_clause}{order_clause} LIMIT ? OFFSET ?",
+            page_params,
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return ([_parse_device_row(row) for row in rows], total)
+
+
+async def get_dashboard_stats(include_ignored: bool = True) -> dict:
+    """Get dashboard stats and server-side filter counts without loading all rows."""
+    now = datetime.now()
+    today_start = datetime.combine(now.date(), datetime.min.time())
+    one_hour_ago = now - timedelta(hours=1)
+
+    randomized_sql = _randomized_mac_sql("d.mac")
+    non_randomized_sql = f"NOT {randomized_sql}"
+    where_clause = "" if include_ignored else "WHERE d.ignored = 0"
+
+    query = f"""
+        SELECT
+            SUM(CASE WHEN {non_randomized_sql} THEN 1 ELSE 0 END) AS total,
+            SUM(CASE WHEN {randomized_sql} THEN 1 ELSE 0 END) AS randomized_count,
+            SUM(CASE WHEN {non_randomized_sql} AND d.last_seen >= ? THEN 1 ELSE 0 END) AS active_today,
+            SUM(CASE WHEN {non_randomized_sql} AND d.first_seen >= ? THEN 1 ELSE 0 END) AS new_past_hour,
+            SUM(CASE WHEN {non_randomized_sql} AND d.watched = 1 THEN 1 ELSE 0 END) AS watched_count,
+            SUM(CASE WHEN {non_randomized_sql} AND COALESCE(d.device_type, 'unknown') = 'phone' THEN 1 ELSE 0 END) AS phone_count,
+            SUM(CASE WHEN {non_randomized_sql} AND COALESCE(d.device_type, 'unknown') IN ('laptop', 'computer') THEN 1 ELSE 0 END) AS laptop_count,
+            SUM(CASE WHEN {non_randomized_sql} AND COALESCE(d.device_type, 'unknown') IN ('audio', 'speaker') THEN 1 ELSE 0 END) AS audio_count,
+            SUM(CASE WHEN {non_randomized_sql} AND COALESCE(d.device_type, 'unknown') = 'smart' THEN 1 ELSE 0 END) AS smart_count,
+            SUM(CASE WHEN {non_randomized_sql} AND COALESCE(d.device_type, 'unknown') = 'unknown' THEN 1 ELSE 0 END) AS unknown_count
+        FROM devices d
+        {where_clause}
+    """
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(query, (today_start.isoformat(), one_hour_ago.isoformat())) as cursor:
+            row = await cursor.fetchone()
+
+    if not row:
+        return {
+            "total": 0,
+            "randomized_count": 0,
+            "active_today": 0,
+            "new_past_hour": 0,
+            "filter_counts": {"all": 0, "watched": 0, "phone": 0, "laptop": 0, "audio": 0, "smart": 0, "unknown": 0},
+        }
+
+    total = int(row["total"] or 0)
+    filter_counts = {
+        "all": total,
+        "watched": int(row["watched_count"] or 0),
+        "phone": int(row["phone_count"] or 0),
+        "laptop": int(row["laptop_count"] or 0),
+        "audio": int(row["audio_count"] or 0),
+        "smart": int(row["smart_count"] or 0),
+        "unknown": int(row["unknown_count"] or 0),
+    }
+
+    return {
+        "total": total,
+        "randomized_count": int(row["randomized_count"] or 0),
+        "active_today": int(row["active_today"] or 0),
+        "new_past_hour": int(row["new_past_hour"] or 0),
+        "filter_counts": filter_counts,
+    }
+
+
+async def get_global_stats(include_ignored: bool = True) -> dict:
+    """Get global device totals without loading full row data."""
+    today_start = datetime.combine(datetime.now().date(), datetime.min.time()).isoformat()
+    where_clause = "" if include_ignored else "WHERE ignored = 0"
+
+    query = f"""
+        SELECT
+            COUNT(*) AS total_devices,
+            SUM(CASE WHEN last_seen >= ? THEN 1 ELSE 0 END) AS active_today,
+            SUM(total_sightings) AS total_sightings
+        FROM devices
+        {where_clause}
+    """
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(query, (today_start,)) as cursor:
+            row = await cursor.fetchone()
+
+    if not row:
+        return {"total_devices": 0, "active_today": 0, "total_sightings": 0}
+
+    return {
+        "total_devices": int(row["total_devices"] or 0),
+        "active_today": int(row["active_today"] or 0),
+        "total_sightings": int(row["total_sightings"] or 0),
+    }
 
 
 async def upsert_device(
@@ -494,6 +698,9 @@ async def search_devices(
                     "mac": row["mac"],
                     "vendor": row["vendor"],
                     "friendly_name": row["friendly_name"],
+                    "device_type": row["device_type"] if "device_type" in row.keys() else None,
+                    "device_class": row["device_class"] if "device_class" in row.keys() else None,
+                    "group_id": row["group_id"] if "group_id" in row.keys() else None,
                     "ignored": bool(row["ignored"]),
                     "first_seen": row["first_seen"],
                     "last_seen": row["last_seen"],
