@@ -147,7 +147,7 @@ class WebServer:
                 return default
 
         page = max(1, _safe_int(request.query.get("page", "1"), 1))
-        page_size = max(10, min(_safe_int(request.query.get("page_size", "100"), 100), 250))
+        page_size = max(10, min(_safe_int(request.query.get("page_size", "50"), 50), 250))
         device_filter = request.query.get("filter", "all")
         search = request.query.get("search")
         sort_column = request.query.get("sort", "last_seen")

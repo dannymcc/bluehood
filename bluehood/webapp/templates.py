@@ -462,6 +462,58 @@ HTML_TEMPLATE = """
             padding: 0.4rem 0.5rem;
         }
 
+        .pagination-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.65rem 0.9rem;
+            border-top: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+            flex-wrap: wrap;
+        }
+
+        .pagination-left,
+        .pagination-right {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+        }
+
+        .pagination-center {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .page-numbers {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            flex-wrap: wrap;
+        }
+
+        .page-number-btn {
+            min-width: 2rem;
+            padding: 0.35rem 0.45rem;
+            font-size: 0.7rem;
+            line-height: 1;
+        }
+
+        .page-number-btn.active {
+            background: var(--accent-red);
+            border-color: var(--accent-red);
+            color: #fff;
+        }
+
+        .page-ellipsis {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            padding: 0 0.1rem;
+        }
+
         /* Device Type Badge */
         .type-badge {
             display: inline-flex;
@@ -844,11 +896,6 @@ HTML_TEMPLATE = """
                         <span style="font-size: 0.7rem; color: var(--text-muted);">
                             <span id="visible-count">--</span> targets
                         </span>
-                        <span id="page-info" style="font-size: 0.7rem; color: var(--text-muted);">
-                            Page --/--
-                        </span>
-                        <button class="btn" id="prev-page-btn" onclick="changePage(-1)">Prev</button>
-                        <button class="btn" id="next-page-btn" onclick="changePage(1)">Next</button>
                         <select class="form-input bulk-select" id="bulk-group-select">
                             <option value="">Assign group...</option>
                         </select>
@@ -880,6 +927,26 @@ HTML_TEMPLATE = """
                         <tr><td colspan="8" style="text-align: center; padding: 2rem; color: var(--text-muted);">Initializing scanner...</td></tr>
                     </tbody>
                 </table>
+                <div class="pagination-bar">
+                    <div class="pagination-left">
+                        <span id="page-info" style="font-size: 0.7rem; color: var(--text-muted);">Page --/--</span>
+                    </div>
+                    <div class="pagination-center">
+                        <button class="btn" id="prev-page-btn" onclick="changePage(-1)">Prev</button>
+                        <div class="page-numbers" id="page-numbers"></div>
+                        <button class="btn" id="next-page-btn" onclick="changePage(1)">Next</button>
+                    </div>
+                    <div class="pagination-right">
+                        <span style="font-size: 0.7rem; color: var(--text-muted);">Rows/page</span>
+                        <select class="form-input bulk-select" id="page-size-select" onchange="changePageSize(this.value)">
+                            <option value="25">25</option>
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                            <option value="150">150</option>
+                            <option value="250">250</option>
+                        </select>
+                    </div>
+                </div>
             </div>
         </main>
     </div>
@@ -940,6 +1007,16 @@ HTML_TEMPLATE = """
 
         applyTheme(localStorage.getItem('bluehood_theme') || 'dark');
 
+        const PAGE_SIZE_OPTIONS = [25, 50, 100, 150, 250];
+        const PAGE_SIZE_STORAGE_KEY = 'bluehood_page_size_v2';
+
+        function normalizePageSize(value) {
+            const parsed = Number.parseInt(value, 10);
+            if (!Number.isFinite(parsed)) return 50;
+            if (PAGE_SIZE_OPTIONS.includes(parsed)) return parsed;
+            return 50;
+        }
+
         let allDevices = [];
         let currentFilter = 'all';
         let dateFilteredDevices = null;
@@ -955,7 +1032,7 @@ HTML_TEMPLATE = """
         let searchDebounceTimer = null;
         let pagination = {
             page: 1,
-            pageSize: 100,
+            pageSize: normalizePageSize(localStorage.getItem(PAGE_SIZE_STORAGE_KEY)),
             totalPages: 1,
             totalMatching: 0,
             hasPrev: false,
@@ -1007,6 +1084,7 @@ HTML_TEMPLATE = """
                 pagination.totalMatching = data.total_matching || 0;
                 pagination.hasPrev = !!data.has_prev;
                 pagination.hasNext = !!data.has_next;
+                localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(pagination.pageSize));
                 updateStats(data);
                 updateFilterCounts(data.filter_counts);
                 updatePaginationUI();
@@ -1022,27 +1100,103 @@ HTML_TEMPLATE = """
             const pageInfo = document.getElementById('page-info');
             const prevBtn = document.getElementById('prev-page-btn');
             const nextBtn = document.getElementById('next-page-btn');
-            if (!pageInfo || !prevBtn || !nextBtn) return;
+            const pageNumbers = document.getElementById('page-numbers');
+            const pageSizeSelect = document.getElementById('page-size-select');
+            if (!pageInfo || !prevBtn || !nextBtn || !pageNumbers) return;
+            if (pageSizeSelect) {
+                pageSizeSelect.value = String(pagination.pageSize);
+            }
 
             if (dateFilteredDevices !== null) {
                 pageInfo.textContent = 'Date query mode';
                 prevBtn.disabled = true;
                 nextBtn.disabled = true;
+                pageNumbers.innerHTML = '';
+                if (pageSizeSelect) pageSizeSelect.disabled = true;
                 return;
             }
 
             pageInfo.textContent = 'Page ' + pagination.page + '/' + Math.max(1, pagination.totalPages);
             prevBtn.disabled = !pagination.hasPrev;
             nextBtn.disabled = !pagination.hasNext;
+            if (pageSizeSelect) pageSizeSelect.disabled = false;
+            renderPageNumbers(pageNumbers);
+        }
+
+        function getPageTokens(totalPages, currentPage) {
+            if (totalPages <= 7) {
+                return Array.from({ length: totalPages }, (_, i) => i + 1);
+            }
+
+            const tokens = [1];
+            let start = Math.max(2, currentPage - 1);
+            let end = Math.min(totalPages - 1, currentPage + 1);
+
+            if (currentPage <= 3) {
+                start = 2;
+                end = 4;
+            } else if (currentPage >= totalPages - 2) {
+                start = totalPages - 3;
+                end = totalPages - 1;
+            }
+
+            if (start > 2) tokens.push('…');
+            for (let page = start; page <= end; page++) tokens.push(page);
+            if (end < totalPages - 1) tokens.push('…');
+            tokens.push(totalPages);
+
+            return tokens;
+        }
+
+        function renderPageNumbers(container) {
+            const totalPages = Math.max(1, pagination.totalPages);
+            const currentPage = Math.min(Math.max(1, pagination.page), totalPages);
+            const tokens = getPageTokens(totalPages, currentPage);
+
+            container.innerHTML = tokens.map(token => {
+                if (typeof token !== 'number') {
+                    return '<span class="page-ellipsis">' + token + '</span>';
+                }
+
+                const activeClass = token === currentPage ? ' active' : '';
+                return (
+                    '<button class="btn page-number-btn' + activeClass + '"' +
+                    ' onclick="goToPage(' + token + ')">' +
+                    token +
+                    '</button>'
+                );
+            }).join('');
+        }
+
+        function goToPage(page) {
+            if (dateFilteredDevices !== null) return;
+            const targetPage = Math.max(1, Math.min(page, pagination.totalPages));
+            if (targetPage === pagination.page) return;
+            pagination.page = targetPage;
+            selectedMacs.clear();
+            lastSelectedIndex = null;
+            refreshDevices();
         }
 
         function changePage(delta) {
             if (dateFilteredDevices !== null) return;
             const nextPage = pagination.page + delta;
-            if (nextPage < 1 || nextPage > pagination.totalPages) return;
-            pagination.page = nextPage;
+            goToPage(nextPage);
+        }
+
+        function changePageSize(value) {
+            const nextPageSize = normalizePageSize(value);
+            if (nextPageSize === pagination.pageSize) return;
+            pagination.pageSize = nextPageSize;
+            localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(nextPageSize));
+            pagination.page = 1;
             selectedMacs.clear();
             lastSelectedIndex = null;
+
+            if (dateFilteredDevices !== null) {
+                updatePaginationUI();
+                return;
+            }
             refreshDevices();
         }
 

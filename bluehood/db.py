@@ -248,7 +248,7 @@ def _build_device_query_filters(
 
 async def get_devices_page(
     page: int = 1,
-    page_size: int = 100,
+    page_size: int = 50,
     include_ignored: bool = True,
     device_filter: str = "all",
     search: Optional[str] = None,
