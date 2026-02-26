@@ -2,8 +2,11 @@
 
 import asyncio
 import logging
+import os
 import re
 import subprocess
+import sys
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -140,7 +143,10 @@ def list_adapters() -> list[BluetoothAdapter]:
     return adapters
 
 
-ADAPTER_RESET_THRESHOLD = 3
+VENDOR_DB_MAX_AGE_DAYS = 7
+VENDOR_DB_UPDATE_TIMEOUT = 30
+
+RECOVERY_THRESHOLD = 3
 
 
 class BluetoothScanner:
@@ -151,27 +157,55 @@ class BluetoothScanner:
         self._mac_lookup: Optional[AsyncMacLookup] = None
         self._vendor_cache: dict[str, Optional[str]] = {}
         self._vendors_updated = False
+        self._vendor_update_task: Optional[asyncio.Task] = None
         self._consecutive_ble_failures = 0
 
-    async def _ensure_vendor_db(self) -> None:
-        """Ensure vendor database is up to date."""
+    def _is_vendor_db_fresh(self) -> bool:
+        """Check if the cached vendor DB exists and is less than 7 days old."""
+        cache_path = BaseMacLookup.cache_path if HAS_MAC_LOOKUP else None
+        if not cache_path or not os.path.exists(cache_path):
+            return False
+        age_days = (time.time() - os.path.getmtime(cache_path)) / 86400
+        return age_days < VENDOR_DB_MAX_AGE_DAYS
+
+    def _start_vendor_db_update(self) -> None:
+        """Kick off a background vendor DB update (never blocks scanning)."""
         if self._vendors_updated or not HAS_MAC_LOOKUP:
             return
+        if self._vendor_update_task and not self._vendor_update_task.done():
+            return
 
+        if self._is_vendor_db_fresh():
+            logger.info("MAC vendor database is up to date (cached)")
+            self._vendors_updated = True
+            return
+
+        self._vendor_update_task = asyncio.create_task(self._update_vendor_db())
+
+    async def _update_vendor_db(self) -> None:
+        """Download vendor database in the background with a timeout."""
         try:
-            # Run the sync update in a thread pool to avoid event loop conflict
             logger.info("Updating MAC vendor database...")
 
             def update_sync():
                 mac_lookup = MacLookup()
                 mac_lookup.update_vendors()
 
-            await asyncio.to_thread(update_sync)
+            await asyncio.wait_for(
+                asyncio.to_thread(update_sync),
+                timeout=VENDOR_DB_UPDATE_TIMEOUT,
+            )
             self._vendors_updated = True
             logger.info("MAC vendor database updated")
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"MAC vendor database update timed out ({VENDOR_DB_UPDATE_TIMEOUT}s), "
+                "using cached/bundled data"
+            )
+            self._vendors_updated = True
         except Exception as e:
             logger.warning(f"Could not update vendor database: {e}")
-            self._vendors_updated = True  # Don't retry
+            self._vendors_updated = True
 
     def _is_randomized_mac(self, mac: str) -> bool:
         """Check if MAC address is locally administered (randomized).
@@ -210,7 +244,7 @@ class BluetoothScanner:
         if HAS_MAC_LOOKUP:
             try:
                 if self._mac_lookup is None:
-                    await self._ensure_vendor_db()
+                    self._start_vendor_db_update()
                     self._mac_lookup = AsyncMacLookup()
 
                 vendor = await self._mac_lookup.lookup(mac)
@@ -264,62 +298,33 @@ class BluetoothScanner:
             logger.debug(f"Vendor API error for {oui}: {e}")
             return None
 
-    async def _try_stop_discovery(self) -> bool:
-        """Try to clear a stuck BlueZ discovery session via bluetoothctl."""
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "bluetoothctl", "scan", "off",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
-            logger.info("Cleared stuck BlueZ discovery via bluetoothctl")
-            return True
-        except Exception as e:
-            logger.debug(f"bluetoothctl scan off failed: {e}")
-            return False
-
-    async def _reset_adapter(self) -> bool:
-        """Reset the Bluetooth adapter to recover from stuck states."""
-        adapter = self.adapter or "hci0"
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "hciconfig", adapter, "reset",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-            if proc.returncode == 0:
-                logger.warning(f"Reset Bluetooth adapter {adapter}")
-                await asyncio.sleep(2)
-                return True
-            else:
-                logger.error(f"Adapter reset failed: {stderr.decode().strip()}")
-                return False
-        except Exception as e:
-            logger.error(f"Adapter reset error: {e}")
-            return False
-
     async def _recover_ble(self) -> None:
-        """Attempt to recover BLE scanning after consecutive failures."""
-        if self._consecutive_ble_failures < ADAPTER_RESET_THRESHOLD:
-            return
+        """Reset the Bluetooth adapter and exit the process.
 
-        logger.warning(
-            f"BLE scan failed {self._consecutive_ble_failures} times consecutively, "
-            "attempting recovery"
+        BlueZ D-Bus state goes stale after adapter issues, so we must
+        both reset the hardware AND get fresh D-Bus connections.
+        The container's restart policy brings us back clean.
+        """
+        adapter = self.adapter or "hci0"
+        logger.critical(
+            f"BLE scan failed {self._consecutive_ble_failures} times consecutively. "
+            f"Resetting adapter {adapter} and exiting for container restart."
         )
-        if await self._try_stop_discovery():
-            await asyncio.sleep(1)
-            return
-
-        await self._reset_adapter()
+        try:
+            subprocess.run(
+                ["hciconfig", adapter, "reset"],
+                timeout=10,
+                capture_output=True,
+            )
+        except Exception as e:
+            logger.error(f"Adapter reset failed: {e}")
+        sys.exit(1)
 
     async def scan_ble(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
         """Perform a Bluetooth LE scan."""
         devices: list[ScannedDevice] = []
 
-        if self._consecutive_ble_failures >= ADAPTER_RESET_THRESHOLD:
+        if self._consecutive_ble_failures >= RECOVERY_THRESHOLD:
             await self._recover_ble()
 
         try:
@@ -330,8 +335,6 @@ class BluetoothScanner:
             if self.adapter:
                 kwargs["adapter"] = self.adapter
 
-            # Hard deadline — bleak's timeout only controls the scan window,
-            # not the D-Bus call which can block indefinitely.
             discovered = await asyncio.wait_for(
                 BleakScanner.discover(**kwargs),
                 timeout=duration + 10,
@@ -353,24 +356,24 @@ class BluetoothScanner:
                 ))
 
             logger.debug(f"BLE scan: found {len(devices)} devices")
+            if self._consecutive_ble_failures > 0:
+                logger.info(
+                    f"BLE scan recovered after {self._consecutive_ble_failures} failures"
+                )
             self._consecutive_ble_failures = 0
 
         except asyncio.TimeoutError:
             self._consecutive_ble_failures += 1
             logger.warning(
-                f"BLE scan timed out (adapter may be busy, "
-                f"failure {self._consecutive_ble_failures}/{ADAPTER_RESET_THRESHOLD})"
+                f"BLE scan timed out "
+                f"(failure {self._consecutive_ble_failures}/{RECOVERY_THRESHOLD})"
             )
         except Exception as e:
             self._consecutive_ble_failures += 1
-            is_in_progress = "InProgress" in str(e) or "already in progress" in str(e)
-            if is_in_progress:
-                logger.error(
-                    f"BLE scan error: {e} "
-                    f"(failure {self._consecutive_ble_failures}/{ADAPTER_RESET_THRESHOLD})"
-                )
-            else:
-                logger.error(f"BLE scan error: {e}")
+            logger.error(
+                f"BLE scan error: {e} "
+                f"(failure {self._consecutive_ble_failures}/{RECOVERY_THRESHOLD})"
+            )
 
         return devices
 
@@ -464,11 +467,7 @@ class BluetoothScanner:
         """Perform both BLE and classic Bluetooth scans.
 
         Scans run sequentially (BLE first, then classic) to avoid adapter
-        contention on single-adapter devices. Running them concurrently causes
-        the classic inquiry (hcitool inq) to lock the adapter in INQUIRY mode,
-        blocking BleakScanner.discover() indefinitely via D-Bus.
-
-        See: https://github.com/dannymcc/bluehood/issues/30
+        contention on single-adapter devices like the Raspberry Pi 3B.
         """
         ble_devices: list[ScannedDevice] = []
         classic_devices: list[ScannedDevice] = []
