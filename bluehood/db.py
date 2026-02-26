@@ -107,6 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_sightings_timestamp ON sightings(timestamp);
 async def init_db() -> None:
     """Initialize the database schema."""
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(SCHEMA)
 
         # Migrations for devices table columns
