@@ -146,9 +146,7 @@ def list_adapters() -> list[BluetoothAdapter]:
 VENDOR_DB_MAX_AGE_DAYS = 7
 VENDOR_DB_UPDATE_TIMEOUT = 30
 
-RECOVERY_CYCLE_AT = 3
-RECOVERY_RESET_AT = 6
-RECOVERY_EXIT_AT = 10
+RECOVERY_THRESHOLD = 3
 
 
 class BluetoothScanner:
@@ -161,7 +159,6 @@ class BluetoothScanner:
         self._vendors_updated = False
         self._vendor_update_task: Optional[asyncio.Task] = None
         self._consecutive_ble_failures = 0
-        self._recovery_level = 0  # 0=none, 1=cycled, 2=reset
 
     def _is_vendor_db_fresh(self) -> bool:
         """Check if the cached vendor DB exists and is less than 7 days old."""
@@ -301,67 +298,33 @@ class BluetoothScanner:
             logger.debug(f"Vendor API error for {oui}: {e}")
             return None
 
-    async def _run_recovery_cmd(self, *args: str, timeout: float = 10) -> bool:
-        """Run a recovery command, ensuring subprocess resources are cleaned up."""
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            return proc.returncode == 0
-        except asyncio.TimeoutError:
-            if proc and proc.returncode is None:
-                proc.kill()
-                await proc.wait()
-            return False
-        except Exception:
-            return False
-
     async def _recover_ble(self) -> None:
-        """Escalating recovery for stuck BLE scanning.
+        """Reset the Bluetooth adapter and exit the process.
 
-        Each level is tried exactly once. Between levels, scan attempts
-        continue without spawning recovery subprocesses.
-
-        Level 1 (3 failures):  bluetoothctl scan off + adapter cycle
-        Level 2 (6 failures):  full hciconfig reset
-        Level 3 (10 failures): sys.exit(1) — container restart is the
-                                only way to get fresh D-Bus connections
+        BlueZ D-Bus state goes stale after adapter issues, so we must
+        both reset the hardware AND get fresh D-Bus connections.
+        The container's restart policy brings us back clean.
         """
-        failures = self._consecutive_ble_failures
         adapter = self.adapter or "hci0"
-
-        if failures >= RECOVERY_EXIT_AT:
-            logger.critical(
-                f"BLE scan failed {failures} times, all recovery exhausted. "
-                "Exiting for container restart."
+        logger.critical(
+            f"BLE scan failed {self._consecutive_ble_failures} times consecutively. "
+            f"Resetting adapter {adapter} and exiting for container restart."
+        )
+        try:
+            subprocess.run(
+                ["hciconfig", adapter, "reset"],
+                timeout=10,
+                capture_output=True,
             )
-            sys.exit(1)
-
-        if failures >= RECOVERY_RESET_AT and self._recovery_level < 2:
-            self._recovery_level = 2
-            logger.warning(f"BLE recovery level 2: resetting adapter {adapter}")
-            await self._run_recovery_cmd("hciconfig", adapter, "reset")
-            await asyncio.sleep(3)
-            return
-
-        if failures >= RECOVERY_CYCLE_AT and self._recovery_level < 1:
-            self._recovery_level = 1
-            logger.warning(f"BLE recovery level 1: cycling adapter {adapter}")
-            await self._run_recovery_cmd("bluetoothctl", "scan", "off", timeout=5)
-            await self._run_recovery_cmd("hciconfig", adapter, "down")
-            await asyncio.sleep(1)
-            await self._run_recovery_cmd("hciconfig", adapter, "up")
-            await asyncio.sleep(2)
+        except Exception as e:
+            logger.error(f"Adapter reset failed: {e}")
+        sys.exit(1)
 
     async def scan_ble(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
         """Perform a Bluetooth LE scan."""
         devices: list[ScannedDevice] = []
 
-        if self._consecutive_ble_failures >= RECOVERY_CYCLE_AT:
+        if self._consecutive_ble_failures >= RECOVERY_THRESHOLD:
             await self._recover_ble()
 
         try:
@@ -395,23 +358,21 @@ class BluetoothScanner:
             logger.debug(f"BLE scan: found {len(devices)} devices")
             if self._consecutive_ble_failures > 0:
                 logger.info(
-                    f"BLE scan recovered after {self._consecutive_ble_failures} failures "
-                    f"(recovery level {self._recovery_level})"
+                    f"BLE scan recovered after {self._consecutive_ble_failures} failures"
                 )
             self._consecutive_ble_failures = 0
-            self._recovery_level = 0
 
         except asyncio.TimeoutError:
             self._consecutive_ble_failures += 1
             logger.warning(
                 f"BLE scan timed out "
-                f"(failure {self._consecutive_ble_failures}/{RECOVERY_CYCLE_AT})"
+                f"(failure {self._consecutive_ble_failures}/{RECOVERY_THRESHOLD})"
             )
         except Exception as e:
             self._consecutive_ble_failures += 1
             logger.error(
                 f"BLE scan error: {e} "
-                f"(failure {self._consecutive_ble_failures}/{RECOVERY_CYCLE_AT})"
+                f"(failure {self._consecutive_ble_failures}/{RECOVERY_THRESHOLD})"
             )
 
         return devices
