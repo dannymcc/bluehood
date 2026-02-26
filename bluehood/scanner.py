@@ -5,7 +5,6 @@ import logging
 import os
 import re
 import subprocess
-import sys
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -147,6 +146,7 @@ VENDOR_DB_MAX_AGE_DAYS = 7
 VENDOR_DB_UPDATE_TIMEOUT = 30
 
 RECOVERY_THRESHOLD = 3
+RECOVERY_COOLDOWN = 300  # seconds between recovery attempts
 
 
 class BluetoothScanner:
@@ -159,6 +159,8 @@ class BluetoothScanner:
         self._vendors_updated = False
         self._vendor_update_task: Optional[asyncio.Task] = None
         self._consecutive_ble_failures = 0
+        self._last_recovery_time = 0.0
+        self._in_cooldown = False
 
     def _is_vendor_db_fresh(self) -> bool:
         """Check if the cached vendor DB exists and is less than 7 days old."""
@@ -299,26 +301,38 @@ class BluetoothScanner:
             return None
 
     async def _recover_ble(self) -> None:
-        """Reset the Bluetooth adapter and exit the process.
+        """Recover from stuck BlueZ state using rfkill block/unblock.
 
-        BlueZ D-Bus state goes stale after adapter issues, so we must
-        both reset the hardware AND get fresh D-Bus connections.
-        The container's restart policy brings us back clean.
+        hciconfig reset only resets the HCI firmware — BlueZ's D-Bus
+        state (including orphaned discovery sessions) is untouched.
+        rfkill block/unblock forces the kernel to fully remove and
+        re-add the Bluetooth device, making BlueZ drop all state.
+
+        Never exits the process — crash loops on a 1GB Pi cause the
+        entire system to freeze.
         """
-        adapter = self.adapter or "hci0"
-        logger.critical(
-            f"BLE scan failed {self._consecutive_ble_failures} times consecutively. "
-            f"Resetting adapter {adapter} and exiting for container restart."
+        now = time.monotonic()
+        if now - self._last_recovery_time < RECOVERY_COOLDOWN:
+            return
+        self._last_recovery_time = now
+
+        logger.warning(
+            f"BLE scan failed {self._consecutive_ble_failures} times. "
+            "Recovering via rfkill block/unblock."
         )
         try:
-            subprocess.run(
-                ["hciconfig", adapter, "reset"],
-                timeout=10,
-                capture_output=True,
-            )
+            subprocess.run(["rfkill", "block", "bluetooth"],
+                           timeout=5, capture_output=True)
+            time.sleep(2)
+            subprocess.run(["rfkill", "unblock", "bluetooth"],
+                           timeout=5, capture_output=True)
+            logger.info("Bluetooth adapter reinitialized via rfkill")
         except Exception as e:
-            logger.error(f"Adapter reset failed: {e}")
-        sys.exit(1)
+            logger.error(f"rfkill recovery failed: {e}")
+
+        await asyncio.sleep(3)
+        self._consecutive_ble_failures = 0
+        self._in_cooldown = True
 
     async def scan_ble(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
         """Perform a Bluetooth LE scan."""
@@ -335,10 +349,7 @@ class BluetoothScanner:
             if self.adapter:
                 kwargs["adapter"] = self.adapter
 
-            discovered = await asyncio.wait_for(
-                BleakScanner.discover(**kwargs),
-                timeout=duration + 10,
-            )
+            discovered = await BleakScanner.discover(**kwargs)
 
             for device, adv_data in discovered.values():
                 mac = device.address
@@ -356,18 +367,11 @@ class BluetoothScanner:
                 ))
 
             logger.debug(f"BLE scan: found {len(devices)} devices")
-            if self._consecutive_ble_failures > 0:
-                logger.info(
-                    f"BLE scan recovered after {self._consecutive_ble_failures} failures"
-                )
+            if self._in_cooldown:
+                logger.info("BLE scan recovered after rfkill reset")
+                self._in_cooldown = False
             self._consecutive_ble_failures = 0
 
-        except asyncio.TimeoutError:
-            self._consecutive_ble_failures += 1
-            logger.warning(
-                f"BLE scan timed out "
-                f"(failure {self._consecutive_ble_failures}/{RECOVERY_THRESHOLD})"
-            )
         except Exception as e:
             self._consecutive_ble_failures += 1
             logger.error(
