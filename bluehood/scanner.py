@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -145,7 +146,9 @@ def list_adapters() -> list[BluetoothAdapter]:
 VENDOR_DB_MAX_AGE_DAYS = 7
 VENDOR_DB_UPDATE_TIMEOUT = 30
 
-ADAPTER_RESET_THRESHOLD = 3
+RECOVERY_STOP_DISCOVERY = 3
+RECOVERY_ADAPTER_RESET = 6
+RECOVERY_PROCESS_EXIT = 15
 
 
 class BluetoothScanner:
@@ -158,6 +161,7 @@ class BluetoothScanner:
         self._vendors_updated = False
         self._vendor_update_task: Optional[asyncio.Task] = None
         self._consecutive_ble_failures = 0
+        self._last_recovery_at = 0
 
     def _is_vendor_db_fresh(self) -> bool:
         """Check if the cached vendor DB exists and is less than 7 days old."""
@@ -297,63 +301,66 @@ class BluetoothScanner:
             logger.debug(f"Vendor API error for {oui}: {e}")
             return None
 
-    async def _try_stop_discovery(self) -> bool:
-        """Try to clear a stuck BlueZ discovery session via bluetoothctl."""
-        adapter = self.adapter or "hci0"
+    async def _run_recovery_cmd(self, *args: str, timeout: float = 10) -> bool:
+        """Run a recovery command, ensuring subprocess resources are cleaned up."""
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                "bluetoothctl", "scan", "off",
-                stdout=asyncio.subprocess.PIPE,
+                *args,
+                stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
-            logger.info(f"Cleared stuck BlueZ discovery via bluetoothctl")
-            return True
-        except Exception as e:
-            logger.debug(f"bluetoothctl scan off failed: {e}")
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            return proc.returncode == 0
+        except asyncio.TimeoutError:
+            if proc and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
             return False
-
-    async def _reset_adapter(self) -> bool:
-        """Reset the Bluetooth adapter to recover from stuck states."""
-        adapter = self.adapter or "hci0"
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "hciconfig", adapter, "reset",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-            if proc.returncode == 0:
-                logger.warning(f"Reset Bluetooth adapter {adapter}")
-                await asyncio.sleep(2)
-                return True
-            else:
-                logger.error(f"Adapter reset failed: {stderr.decode().strip()}")
-                return False
-        except Exception as e:
-            logger.error(f"Adapter reset error: {e}")
+        except Exception:
             return False
 
     async def _recover_ble(self) -> None:
-        """Attempt to recover BLE scanning after consecutive failures."""
-        if self._consecutive_ble_failures < ADAPTER_RESET_THRESHOLD:
+        """Escalating recovery for stuck BLE scanning.
+
+        Each level is tried once at its threshold, not repeated every cycle.
+        Level 1 (3 failures):  bluetoothctl scan off + adapter down/up
+        Level 2 (6 failures):  full hciconfig reset
+        Level 3 (15 failures): exit process (container restart cleans everything)
+        """
+        failures = self._consecutive_ble_failures
+        if failures == self._last_recovery_at:
+            return
+        self._last_recovery_at = failures
+
+        adapter = self.adapter or "hci0"
+
+        if failures >= RECOVERY_PROCESS_EXIT:
+            logger.critical(
+                f"BLE scan failed {failures} times, all recovery attempts exhausted. "
+                "Exiting for container restart."
+            )
+            sys.exit(1)
+
+        if failures >= RECOVERY_ADAPTER_RESET:
+            logger.warning(f"BLE recovery: resetting adapter {adapter} (failure {failures})")
+            if await self._run_recovery_cmd("hciconfig", adapter, "reset"):
+                await asyncio.sleep(3)
             return
 
-        logger.warning(
-            f"BLE scan failed {self._consecutive_ble_failures} times consecutively, "
-            "attempting recovery"
-        )
-        if await self._try_stop_discovery():
+        if failures >= RECOVERY_STOP_DISCOVERY:
+            logger.warning(f"BLE recovery: cycling adapter {adapter} (failure {failures})")
+            await self._run_recovery_cmd("bluetoothctl", "scan", "off", timeout=5)
+            await self._run_recovery_cmd("hciconfig", adapter, "down")
             await asyncio.sleep(1)
-            return
-
-        await self._reset_adapter()
+            await self._run_recovery_cmd("hciconfig", adapter, "up")
+            await asyncio.sleep(2)
 
     async def scan_ble(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
         """Perform a Bluetooth LE scan."""
         devices: list[ScannedDevice] = []
 
-        if self._consecutive_ble_failures >= ADAPTER_RESET_THRESHOLD:
+        if self._consecutive_ble_failures >= RECOVERY_STOP_DISCOVERY:
             await self._recover_ble()
 
         try:
@@ -364,7 +371,10 @@ class BluetoothScanner:
             if self.adapter:
                 kwargs["adapter"] = self.adapter
 
-            discovered = await BleakScanner.discover(**kwargs)
+            discovered = await asyncio.wait_for(
+                BleakScanner.discover(**kwargs),
+                timeout=duration + 10,
+            )
 
             for device, adv_data in discovered.values():
                 mac = device.address
@@ -383,17 +393,20 @@ class BluetoothScanner:
 
             logger.debug(f"BLE scan: found {len(devices)} devices")
             self._consecutive_ble_failures = 0
+            self._last_recovery_at = 0
 
+        except asyncio.TimeoutError:
+            self._consecutive_ble_failures += 1
+            logger.warning(
+                f"BLE scan timed out (failure {self._consecutive_ble_failures}/"
+                f"{RECOVERY_STOP_DISCOVERY})"
+            )
         except Exception as e:
             self._consecutive_ble_failures += 1
-            is_in_progress = "InProgress" in str(e) or "already in progress" in str(e)
-            if is_in_progress:
-                logger.error(
-                    f"BLE scan error: {e} "
-                    f"(failure {self._consecutive_ble_failures}/{ADAPTER_RESET_THRESHOLD})"
-                )
-            else:
-                logger.error(f"BLE scan error: {e}")
+            logger.error(
+                f"BLE scan error: {e} "
+                f"(failure {self._consecutive_ble_failures}/{RECOVERY_STOP_DISCOVERY})"
+            )
 
         return devices
 
@@ -484,22 +497,23 @@ class BluetoothScanner:
             return None
 
     async def scan(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
-        """Perform both BLE and classic Bluetooth scans."""
-        # Run both scans concurrently
-        ble_task = asyncio.create_task(self.scan_ble(duration))
-        classic_task = asyncio.create_task(self.scan_classic())
+        """Perform both BLE and classic Bluetooth scans.
 
-        ble_devices, classic_devices = await asyncio.gather(
-            ble_task, classic_task, return_exceptions=True
-        )
+        Scans run sequentially (BLE first, then classic) to avoid adapter
+        contention on single-adapter devices like the Raspberry Pi 3B.
+        """
+        ble_devices: list[ScannedDevice] = []
+        classic_devices: list[ScannedDevice] = []
 
-        # Handle any exceptions
-        if isinstance(ble_devices, Exception):
-            logger.error(f"BLE scan failed: {ble_devices}")
-            ble_devices = []
-        if isinstance(classic_devices, Exception):
-            logger.debug(f"Classic scan failed: {classic_devices}")
-            classic_devices = []
+        try:
+            ble_devices = await self.scan_ble(duration)
+        except Exception as e:
+            logger.error(f"BLE scan failed: {e}")
+
+        try:
+            classic_devices = await self.scan_classic()
+        except Exception as e:
+            logger.debug(f"Classic scan failed: {e}")
 
         # Merge results, preferring BLE data if device seen in both
         seen_macs = set()
