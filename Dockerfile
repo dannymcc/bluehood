@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bluez \
     libglib2.0-dev \
     libdbus-1-dev \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user (but we'll need bluetooth group access)
@@ -37,8 +38,9 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 EXPOSE 9199
 
-# Run as bluehood user
-USER bluehood
+# Entrypoint handles PUID/PGID user switching
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
-# Start the daemon
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["python", "-m", "bluehood.daemon"]

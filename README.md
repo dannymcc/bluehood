@@ -145,10 +145,16 @@ The web dashboard will be available at **http://localhost:8080**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `PUID` | `1000` | UID for the container user — set to match your host user (`id -u`) when using bind mounts |
+| `PGID` | `1000` | GID for the container user — set to match your host group (`id -g`) when using bind mounts |
+| `TZ` | UTC | Container timezone (e.g., `Europe/London`) |
 | `BLUEHOOD_ADAPTER` | auto | Bluetooth adapter for BLE scanning (e.g., `hci0`) |
 | `BLUEHOOD_CLASSIC_ADAPTER` | same as `BLUEHOOD_ADAPTER` | Separate adapter for classic Bluetooth scanning (e.g., `hci1`). When set to a different adapter, BLE and classic scans run concurrently. |
 | `BLUEHOOD_DATA_DIR` | `/data` | Database storage directory |
 | `BLUEHOOD_METRICS_PORT` | disabled | Prometheus metrics port (e.g., `9199`) |
+| `BLUEHOOD_HEARTBEAT_URL` | disabled | URL to POST heartbeat check-ins (e.g., a healthchecks.io or uptime-kuma push URL) |
+| `BLUEHOOD_HEARTBEAT_INTERVAL` | `300` | Seconds between heartbeat check-ins |
+| `BLUEHOOD_PRUNE_DAYS` | `0` (disabled) | Auto-delete sightings older than N days to free storage |
 
 ### Bluetooth Adapter Requirements
 
