@@ -431,7 +431,7 @@ Contributions welcome! Please open an issue or PR on GitHub.
 - [@unqualifiedkoala](https://github.com/unqualifiedkoala) - Documented BLE adapter requirements
 - [@dazzag24](https://github.com/dazzag24) - Reported macOS address format issue
 - [@floese](https://github.com/floese) (W.A.Flozart) - Firefox doubleclick fix (#29)
-- [@GeiserX](https://github.com/GeiserX) (Sergio Fernández) - Prometheus metrics exporter (#35), non-blocking vendor DB fix (#37), dual-adapter scanning (#33)
+- [@GeiserX](https://github.com/GeiserX) (Sergio Fernández) - Prometheus metrics exporter (#35), non-blocking vendor DB fix (#37), dual-adapter scanning (#33), robust scan recovery with rfkill (#40)
 
 ## License
 
