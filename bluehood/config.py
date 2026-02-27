@@ -21,3 +21,6 @@ SCAN_DURATION = 5
 
 # Bluetooth adapter (None = auto-select, or specify like "hci0")
 BLUETOOTH_ADAPTER = os.environ.get("BLUEHOOD_ADAPTER", None)
+
+# Prometheus metrics port (None = disabled)
+METRICS_PORT = int(os.environ.get("BLUEHOOD_METRICS_PORT", 0)) or None

@@ -7,11 +7,12 @@ import logging
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
-from . import db
-from .config import SCAN_INTERVAL, SOCKET_PATH
+from . import db, __version__
+from .config import SCAN_INTERVAL, SOCKET_PATH, METRICS_PORT
 from .scanner import BluetoothScanner, ScannedDevice, list_adapters
 from .web import WebServer
 from .notifications import NotificationManager
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 class BluehoodDaemon:
     """Main daemon process for Bluetooth scanning."""
 
-    def __init__(self, adapter: Optional[str] = None, web_port: Optional[int] = None):
+    def __init__(self, adapter: Optional[str] = None, web_port: Optional[int] = None, metrics_port: Optional[int] = None):
         self.scanner = BluetoothScanner(adapter=adapter)
         self.running = False
         self.clients: list[asyncio.StreamWriter] = []
@@ -35,6 +36,8 @@ class BluehoodDaemon:
         self._web_port = web_port
         self._web_server: WebServer | None = None
         self._notifications = NotificationManager()
+        self._metrics = None
+        self._metrics_port = metrics_port
 
     async def start(self) -> None:
         """Start the daemon."""
@@ -61,9 +64,21 @@ class BluehoodDaemon:
             await self._web_server.start()
             logger.info(f"Web dashboard available at http://0.0.0.0:{self._web_port}")
 
+        # Start Prometheus metrics exporter (requires `pip install bluehood[metrics]`)
+        if self._metrics_port:
+            try:
+                from .prometheus import MetricsExporter
+                self._metrics = MetricsExporter(port=self._metrics_port, version=__version__)
+                self._metrics.start()
+            except ImportError:
+                logger.error("prometheus-client not installed. Install with: pip install bluehood[metrics]")
+                self._metrics = None
+
         # Start scanning and absence checking
         self.running = True
         asyncio.create_task(self._absence_check_loop())
+        if self._metrics:
+            asyncio.create_task(self._metrics_update_loop())
         await self._scan_loop()
 
     async def stop(self) -> None:
@@ -304,8 +319,11 @@ class BluehoodDaemon:
 
         while self.running:
             try:
+                start_ts = time.monotonic()
                 devices = await self.scanner.scan()
+                duration = time.monotonic() - start_ts
 
+                new_count = 0
                 for device in devices:
                     db_device, is_new = await db.upsert_device(
                         mac=device.mac,
@@ -316,9 +334,16 @@ class BluehoodDaemon:
                         bt_type=device.bt_type,
                         device_class=device.device_class,
                     )
+                    if is_new:
+                        new_count += 1
 
                     # Trigger notification checks
                     await self._notifications.on_device_seen(db_device, is_new)
+
+                if self._metrics:
+                    ble_count = sum(1 for d in devices if d.bt_type == "ble")
+                    classic_count = sum(1 for d in devices if d.bt_type == "classic")
+                    self._metrics.on_scan_complete(devices, ble_count, classic_count, duration, new_count)
 
                 # Notify connected clients
                 await self._notify_clients({
@@ -328,8 +353,20 @@ class BluehoodDaemon:
 
             except Exception as e:
                 logger.error(f"Scan error: {e}")
+                if self._metrics:
+                    self._metrics.on_scan_error("scan")
 
             await asyncio.sleep(SCAN_INTERVAL)
+
+    async def _metrics_update_loop(self) -> None:
+        """Periodically update database-derived metrics."""
+        while self.running:
+            try:
+                if self._metrics:
+                    await self._metrics.update_db_metrics()
+            except Exception as e:
+                logger.warning(f"Metrics update error: {e}")
+            await asyncio.sleep(60)
 
     async def _absence_check_loop(self) -> None:
         """Periodically check for absent watched devices."""
@@ -376,6 +413,12 @@ def main() -> None:
         default=8080,
         help="Web dashboard port (default: 8080)"
     )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=None,
+        help="Prometheus metrics port (default: disabled, env: BLUEHOOD_METRICS_PORT)"
+    )
     args = parser.parse_args()
 
     if args.list_adapters:
@@ -389,7 +432,8 @@ def main() -> None:
         return
 
     web_port = None if args.no_web else args.port
-    daemon = BluehoodDaemon(adapter=args.adapter, web_port=web_port)
+    metrics_port = args.metrics_port or METRICS_PORT
+    daemon = BluehoodDaemon(adapter=args.adapter, web_port=web_port, metrics_port=metrics_port)
     try:
         asyncio.run(daemon.start())
     except KeyboardInterrupt:

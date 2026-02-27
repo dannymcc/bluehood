@@ -15,6 +15,9 @@ dependencies = [
     "mac-vendor-lookup>=0.1.12",
 ]
 
+[project.optional-dependencies]
+metrics = ["prometheus-client>=0.21.0"]
+
 [project.scripts]
 bluehood = "bluehood.daemon:main"
 
