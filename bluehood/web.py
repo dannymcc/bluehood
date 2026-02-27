@@ -77,6 +77,13 @@ HTML_TEMPLATE = """
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
+        /* Thin, subtle scrollbars */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--border-active); }
+        * { scrollbar-width: thin; scrollbar-color: var(--border-color) transparent; }
+
         body {
             font-family: var(--font-mono);
             background: var(--bg-primary);
@@ -663,6 +670,45 @@ HTML_TEMPLATE = """
             font-size: 0.65rem;
             margin-bottom: 0.25rem;
         }
+
+        .activity-grid {
+            display: grid;
+            gap: 3px;
+        }
+
+        .activity-grid.hourly {
+            grid-template-columns: repeat(24, 1fr);
+        }
+
+        .activity-grid.daily {
+            grid-template-columns: repeat(7, 1fr);
+        }
+
+        .activity-cell {
+            aspect-ratio: 1;
+            border-radius: 2px;
+            background: var(--bg-hover);
+            cursor: pointer;
+            transition: opacity 0.1s;
+        }
+
+        .activity-cell:hover { opacity: 0.8; }
+        .activity-cell.l1 { background: rgba(220, 38, 38, 0.25); }
+        .activity-cell.l2 { background: rgba(220, 38, 38, 0.5); }
+        .activity-cell.l3 { background: rgba(220, 38, 38, 0.75); }
+        .activity-cell.l4 { background: var(--accent-red); }
+
+        .activity-labels {
+            display: grid;
+            gap: 3px;
+            margin-top: 2px;
+            font-size: 0.55rem;
+            color: var(--text-muted);
+            text-align: center;
+        }
+
+        .activity-labels.hourly { grid-template-columns: repeat(24, 1fr); }
+        .activity-labels.daily { grid-template-columns: repeat(7, 1fr); }
 
         /* Timeline Chart */
         .timeline-chart {
@@ -1483,12 +1529,12 @@ HTML_TEMPLATE = """
                 '<div id="dwell-stats" class="heatmap" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; text-align: center;"><div style="color: var(--text-muted);">Loading...</div></div>' +
                 '</div>' +
                 '<div class="heatmap-section">' +
-                '<div class="heatmap-title">Hourly Activity Matrix (30d)</div>' +
-                '<div class="heatmap"><div class="heatmap-labels">00  03  06  09  12  15  18  21</div><div>' + renderHourlyHeatmap(data.hourly_data) + '</div></div>' +
+                '<div class="heatmap-title">Hourly Activity (30d)</div>' +
+                '<div class="heatmap">' + renderHourlyHeatmap(data.hourly_data) + '</div>' +
                 '</div>' +
                 '<div class="heatmap-section">' +
-                '<div class="heatmap-title">Daily Activity Matrix</div>' +
-                '<div class="heatmap"><div class="heatmap-labels">M   T   W   T   F   S   S</div><div>' + renderDailyHeatmap(data.daily_data) + '</div></div>' +
+                '<div class="heatmap-title">Daily Activity</div>' +
+                '<div class="heatmap">' + renderDailyHeatmap(data.daily_data) + '</div>' +
                 '</div>' +
                 '<div class="heatmap-section">' +
                 '<div class="heatmap-title">Presence Timeline (30d)</div>' +
@@ -1668,8 +1714,7 @@ HTML_TEMPLATE = """
         }
 
         function renderHourlyHeatmap(hourlyData) {
-            if (!hourlyData || Object.keys(hourlyData).length === 0) return '------------------------';
-            var blocks = ' ░▒▓█';
+            if (!hourlyData || Object.keys(hourlyData).length === 0) return '<div style="color: var(--text-muted); font-size: 0.75rem; text-align: center; padding: 1rem 0;">No data</div>';
             var offset = -(new Date().getTimezoneOffset() / 60);
             var shifted = {};
             for (var h in hourlyData) {
@@ -1677,26 +1722,31 @@ HTML_TEMPLATE = """
                 shifted[localHour] = (shifted[localHour] || 0) + hourlyData[h];
             }
             var max = Math.max(...Object.values(shifted), 1);
-            var result = '';
+            var cells = '';
+            var labels = '';
             for (var i = 0; i < 24; i++) {
                 var count = shifted[i] || 0;
-                var intensity = Math.floor((count / max) * (blocks.length - 1));
-                result += blocks[intensity];
+                var level = count === 0 ? 0 : Math.ceil((count / max) * 4);
+                var label = i < 10 ? '0' + i : '' + i;
+                cells += '<div class="activity-cell l' + level + '" title="' + label + ':00 — ' + count + ' sightings"></div>';
+                labels += '<span>' + (i % 6 === 0 ? label : '') + '</span>';
             }
-            return result;
+            return '<div class="activity-grid hourly">' + cells + '</div><div class="activity-labels hourly">' + labels + '</div>';
         }
 
         function renderDailyHeatmap(dailyData) {
-            if (!dailyData || Object.keys(dailyData).length === 0) return '-------';
-            var blocks = ' ░▒▓█';
+            if (!dailyData || Object.keys(dailyData).length === 0) return '<div style="color: var(--text-muted); font-size: 0.75rem; text-align: center; padding: 1rem 0;">No data</div>';
+            var days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
             var max = Math.max(...Object.values(dailyData), 1);
-            var result = '';
+            var cells = '';
+            var labels = '';
             for (var d = 0; d < 7; d++) {
                 var count = dailyData[d] || dailyData[String(d)] || 0;
-                var intensity = Math.floor((count / max) * (blocks.length - 1));
-                result += blocks[intensity];
+                var level = count === 0 ? 0 : Math.ceil((count / max) * 4);
+                cells += '<div class="activity-cell l' + level + '" title="' + days[d] + ' — ' + count + ' sightings"></div>';
+                labels += '<span>' + days[d] + '</span>';
             }
-            return result;
+            return '<div class="activity-grid daily">' + cells + '</div><div class="activity-labels daily">' + labels + '</div>';
         }
 
         function renderTimeline(timeline) {
