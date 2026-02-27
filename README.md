@@ -18,7 +18,7 @@
 *Main dashboard showing device list with filtering, search, and real-time statistics*
 
 ![Settings](screenshots/settings.png)
-*Configuration page for push notifications and alert triggers*
+*Tabbed configuration page — Alerts, Operations, Groups, and Security*
 
 ![About](screenshots/about.png)
 *Intel page with project information and capabilities overview*
@@ -84,6 +84,11 @@ Bluehood is a Bluetooth scanner that:
 - Notify when watched devices return
 - Notify when watched devices leave
 - Configurable thresholds for arrival/departure
+
+### Operations
+- **Heartbeat check-in** — periodically POST status to an uptime monitoring service (e.g., Uptime Kuma, Healthchecks.io)
+- **Storage rotation** — automatically prune sightings older than a configurable number of days
+- Both configurable from the web UI or via environment variables
 
 ### Web Interface
 - **Compact/Detailed view toggle** for different display preferences
@@ -261,7 +266,7 @@ The dashboard provides:
 - **Device filters** by type (phones, audio, IoT, etc.) and watched status
 - **Search** by MAC, vendor, or name
 - **Date range search** to find devices seen in a specific time window
-- **Settings** for configuring notifications, groups, and authentication
+- **Tabbed settings** page — Alerts, Operations, Groups, and Security (direct-link via hash, e.g. `/settings#operations`)
 - **Device details** modal with:
   - BLE service fingerprints
   - Hourly/daily activity heatmaps
@@ -311,6 +316,8 @@ Data is stored in `~/.local/share/bluehood/bluehood.db` (SQLite).
 Override location with environment variables:
 - `BLUEHOOD_DATA_DIR` - Directory for data files
 - `BLUEHOOD_DB_PATH` - Direct path to database file
+
+> **Note**: Heartbeat and pruning settings can be configured from the web UI (Settings > Operations) or via environment variables. GUI values take priority over env vars.
 
 ## How It Works
 
