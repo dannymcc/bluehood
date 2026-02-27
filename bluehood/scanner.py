@@ -24,7 +24,7 @@ except ImportError:
 MACVENDORS_API_URL = "https://api.macvendors.com/"
 
 from .classifier import is_macos_uuid
-from .config import SCAN_DURATION, BLUETOOTH_ADAPTER, DATA_DIR
+from .config import SCAN_DURATION, BLUETOOTH_ADAPTER, CLASSIC_BLUETOOTH_ADAPTER, DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -147,10 +147,20 @@ VENDOR_DB_UPDATE_TIMEOUT = 30
 
 
 class BluetoothScanner:
-    """Bluetooth LE scanner."""
+    """Bluetooth LE and classic scanner."""
 
-    def __init__(self, adapter: Optional[str] = None):
+    def __init__(
+        self,
+        adapter: Optional[str] = None,
+        classic_adapter: Optional[str] = None,
+    ):
         self.adapter = adapter or BLUETOOTH_ADAPTER
+        self.classic_adapter = classic_adapter or CLASSIC_BLUETOOTH_ADAPTER or self.adapter
+        self._use_dual_adapter = (
+            self.classic_adapter is not None
+            and self.adapter is not None
+            and self.classic_adapter != self.adapter
+        )
         self._mac_lookup: Optional[AsyncMacLookup] = None
         self._vendor_cache: dict[str, Optional[str]] = {}
         self._vendors_updated = False
@@ -307,7 +317,13 @@ class BluetoothScanner:
             if self.adapter:
                 kwargs["adapter"] = self.adapter
 
-            discovered = await BleakScanner.discover(**kwargs)
+            # Wrap in wait_for as a hard deadline — bleak's timeout parameter
+            # only controls the scan window duration, not the underlying D-Bus
+            # call which can block indefinitely if the adapter is busy.
+            discovered = await asyncio.wait_for(
+                BleakScanner.discover(**kwargs),
+                timeout=duration + 10,
+            )
 
             for device, adv_data in discovered.values():
                 mac = device.address
@@ -327,6 +343,8 @@ class BluetoothScanner:
 
             logger.debug(f"BLE scan: found {len(devices)} devices")
 
+        except asyncio.TimeoutError:
+            logger.warning("BLE scan timed out (adapter may be busy)")
         except Exception as e:
             logger.error(f"BLE scan error: {e}")
 
@@ -341,7 +359,7 @@ class BluetoothScanner:
 
         try:
             # Use hcitool for classic Bluetooth inquiry
-            adapter_arg = ["-i", self.adapter] if self.adapter else []
+            adapter_arg = ["-i", self.classic_adapter] if self.classic_adapter else []
 
             # Run inquiry scan
             proc = await asyncio.create_subprocess_exec(
@@ -419,22 +437,47 @@ class BluetoothScanner:
             return None
 
     async def scan(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
-        """Perform both BLE and classic Bluetooth scans."""
-        # Run both scans concurrently
-        ble_task = asyncio.create_task(self.scan_ble(duration))
-        classic_task = asyncio.create_task(self.scan_classic())
+        """Perform both BLE and classic Bluetooth scans.
 
-        ble_devices, classic_devices = await asyncio.gather(
-            ble_task, classic_task, return_exceptions=True
-        )
+        When a dedicated classic adapter is configured, scans run concurrently
+        since they use separate hardware with no contention. Otherwise, scans
+        run sequentially (BLE first, then classic) to avoid locking the shared
+        adapter in INQUIRY mode which blocks BLE discovery via D-Bus.
 
-        # Handle any exceptions
-        if isinstance(ble_devices, Exception):
-            logger.error(f"BLE scan failed: {ble_devices}")
-            ble_devices = []
-        if isinstance(classic_devices, Exception):
-            logger.debug(f"Classic scan failed: {classic_devices}")
-            classic_devices = []
+        See: https://github.com/dannymcc/bluehood/issues/30
+        """
+        ble_devices: list[ScannedDevice] = []
+        classic_devices: list[ScannedDevice] = []
+
+        if self._use_dual_adapter:
+            # Separate adapters — safe to run concurrently
+            ble_task = asyncio.create_task(self.scan_ble(duration))
+            classic_task = asyncio.create_task(self.scan_classic())
+
+            results = await asyncio.gather(
+                ble_task, classic_task, return_exceptions=True
+            )
+
+            if isinstance(results[0], Exception):
+                logger.error(f"BLE scan failed: {results[0]}")
+            else:
+                ble_devices = results[0]
+
+            if isinstance(results[1], Exception):
+                logger.debug(f"Classic scan failed: {results[1]}")
+            else:
+                classic_devices = results[1]
+        else:
+            # Same adapter — run sequentially to avoid contention
+            try:
+                ble_devices = await self.scan_ble(duration)
+            except Exception as e:
+                logger.error(f"BLE scan failed: {e}")
+
+            try:
+                classic_devices = await self.scan_classic()
+            except Exception as e:
+                logger.debug(f"Classic scan failed: {e}")
 
         # Merge results, preferring BLE data if device seen in both
         seen_macs = set()

@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 class BluehoodDaemon:
     """Main daemon process for Bluetooth scanning."""
 
-    def __init__(self, adapter: Optional[str] = None, web_port: Optional[int] = None, metrics_port: Optional[int] = None):
-        self.scanner = BluetoothScanner(adapter=adapter)
+    def __init__(self, adapter: Optional[str] = None, classic_adapter: Optional[str] = None, web_port: Optional[int] = None, metrics_port: Optional[int] = None):
+        self.scanner = BluetoothScanner(adapter=adapter, classic_adapter=classic_adapter)
         self.running = False
         self.clients: list[asyncio.StreamWriter] = []
         self._server: asyncio.Server | None = None
@@ -42,6 +42,11 @@ class BluehoodDaemon:
     async def start(self) -> None:
         """Start the daemon."""
         logger.info("Starting bluehood daemon...")
+        if self.scanner._use_dual_adapter:
+            logger.info(f"Dual-adapter mode: BLE on {self.scanner.adapter}, classic on {self.scanner.classic_adapter}")
+        else:
+            adapter = self.scanner.adapter or "auto"
+            logger.info(f"Single-adapter mode: {adapter} (BLE and classic scans run sequentially)")
 
         # Initialize database
         await db.init_db()
@@ -395,7 +400,12 @@ def main() -> None:
     )
     parser.add_argument(
         "-a", "--adapter",
-        help="Bluetooth adapter to use (e.g., hci0)"
+        help="Bluetooth adapter for BLE scanning (e.g., hci0)"
+    )
+    parser.add_argument(
+        "--classic-adapter",
+        help="Separate adapter for classic Bluetooth scanning (e.g., hci1). "
+             "When set to a different adapter, BLE and classic scans run concurrently."
     )
     parser.add_argument(
         "-l", "--list-adapters",
@@ -433,7 +443,7 @@ def main() -> None:
 
     web_port = None if args.no_web else args.port
     metrics_port = args.metrics_port or METRICS_PORT
-    daemon = BluehoodDaemon(adapter=args.adapter, web_port=web_port, metrics_port=metrics_port)
+    daemon = BluehoodDaemon(adapter=args.adapter, classic_adapter=args.classic_adapter, web_port=web_port, metrics_port=metrics_port)
     try:
         asyncio.run(daemon.start())
     except KeyboardInterrupt:
