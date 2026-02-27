@@ -2002,6 +2002,11 @@ SETTINGS_TEMPLATE = """
                             <div class="form-check-desc">Alert on first contact with unknown device</div>
                         </div>
                     </label>
+                    <div id="new-device-threshold-field" style="display: none; margin: 0.5rem 0 0.5rem 2rem;">
+                        <label class="form-label">Persistence Threshold (min)</label>
+                        <input type="number" class="form-input" id="new_device_threshold_minutes" value="0" min="0" max="1440" style="width: 120px;">
+                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem;">0 = immediate alert, &gt;0 = alert after device persists this long</div>
+                    </div>
                     <label class="form-check">
                         <input type="checkbox" id="notify_watched_return">
                         <div>
@@ -2105,6 +2110,8 @@ SETTINGS_TEMPLATE = """
                 document.getElementById('ntfy_topic').value = data.ntfy_topic || '';
                 document.getElementById('ntfy_enabled').checked = data.ntfy_enabled;
                 document.getElementById('notify_new_device').checked = data.notify_new_device;
+                document.getElementById('new_device_threshold_minutes').value = data.new_device_threshold_minutes || 0;
+                document.getElementById('new-device-threshold-field').style.display = data.notify_new_device ? 'block' : 'none';
                 document.getElementById('notify_watched_return').checked = data.notify_watched_return;
                 document.getElementById('notify_watched_leave').checked = data.notify_watched_leave;
                 document.getElementById('watched_absence_minutes').value = data.watched_absence_minutes;
@@ -2118,6 +2125,7 @@ SETTINGS_TEMPLATE = """
                 ntfy_topic: document.getElementById('ntfy_topic').value,
                 ntfy_enabled: document.getElementById('ntfy_enabled').checked,
                 notify_new_device: document.getElementById('notify_new_device').checked,
+                new_device_threshold_minutes: parseInt(document.getElementById('new_device_threshold_minutes').value) || 0,
                 notify_watched_return: document.getElementById('notify_watched_return').checked,
                 notify_watched_leave: document.getElementById('notify_watched_leave').checked,
                 watched_absence_minutes: parseInt(document.getElementById('watched_absence_minutes').value),
@@ -2147,6 +2155,10 @@ SETTINGS_TEMPLATE = """
                 document.getElementById('logout-btn').style.display = data.authenticated && data.auth_enabled ? 'inline-block' : 'none';
             } catch (error) { console.error('Error loading auth status'); }
         }
+
+        document.getElementById('notify_new_device').addEventListener('change', (e) => {
+            document.getElementById('new-device-threshold-field').style.display = e.target.checked ? 'block' : 'none';
+        });
 
         document.getElementById('auth_enabled').addEventListener('change', (e) => {
             document.getElementById('auth-fields').style.display = e.target.checked ? 'block' : 'none';
@@ -2988,6 +3000,7 @@ class WebServer:
             "ntfy_topic": settings.ntfy_topic or "",
             "ntfy_enabled": settings.ntfy_enabled,
             "notify_new_device": settings.notify_new_device,
+            "new_device_threshold_minutes": settings.new_device_threshold_minutes,
             "notify_watched_return": settings.notify_watched_return,
             "notify_watched_leave": settings.notify_watched_leave,
             "watched_absence_minutes": settings.watched_absence_minutes,
@@ -3002,6 +3015,7 @@ class WebServer:
                 ntfy_topic=data.get("ntfy_topic"),
                 ntfy_enabled=data.get("ntfy_enabled", False),
                 notify_new_device=data.get("notify_new_device", False),
+                new_device_threshold_minutes=int(data.get("new_device_threshold_minutes", 0)),
                 notify_watched_return=data.get("notify_watched_return", True),
                 notify_watched_leave=data.get("notify_watched_leave", True),
                 watched_absence_minutes=int(data.get("watched_absence_minutes", 30)),

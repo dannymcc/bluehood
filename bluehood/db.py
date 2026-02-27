@@ -26,6 +26,7 @@ class Device:
     device_class: Optional[int] = None  # Classic BT device class
     group_id: Optional[int] = None  # Device group
     notes: Optional[str] = None  # Operator notes
+    new_device_notified: bool = True  # Whether new-device notification has been sent
 
     def __post_init__(self):
         if self.service_uuids is None:
@@ -61,6 +62,7 @@ class Settings:
     notify_watched_leave: bool = True
     watched_absence_minutes: int = 30  # Minutes before "left"
     watched_return_minutes: int = 5    # Minutes of absence before "return" triggers
+    new_device_threshold_minutes: int = 0  # 0 = immediate, >0 = deferred
     # Authentication settings
     auth_enabled: bool = False
     auth_username: Optional[str] = None
@@ -119,6 +121,7 @@ async def init_db() -> None:
             ("device_class", "INTEGER"),
             ("group_id", "INTEGER REFERENCES device_groups(id)"),
             ("notes", "TEXT"),
+            ("new_device_notified", "INTEGER DEFAULT 1"),
         ]
 
         for column, column_type in migrations:
@@ -158,6 +161,7 @@ def _parse_device_row(row) -> Device:
         device_class=row["device_class"] if "device_class" in keys else None,
         group_id=row["group_id"] if "group_id" in keys else None,
         notes=row["notes"] if "notes" in keys else None,
+        new_device_notified=bool(row["new_device_notified"]) if "new_device_notified" in keys else True,
     )
 
 
@@ -264,8 +268,8 @@ async def upsert_device(
             # Insert new device
             await db.execute(
                 """
-                INSERT INTO devices (mac, vendor, friendly_name, first_seen, last_seen, total_sightings, service_uuids, bt_type, device_class)
-                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+                INSERT INTO devices (mac, vendor, friendly_name, first_seen, last_seen, total_sightings, service_uuids, bt_type, device_class, new_device_notified)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 0)
                 """,
                 (mac, vendor, friendly_name, now.isoformat(), now.isoformat(), uuids_json, bt_type, device_class)
             )
@@ -328,6 +332,16 @@ async def set_device_notes(mac: str, notes: Optional[str]) -> None:
         await db.execute(
             "UPDATE devices SET notes = ? WHERE mac = ?",
             (notes if notes else None, mac)
+        )
+        await db.commit()
+
+
+async def mark_new_device_notified(mac: str) -> None:
+    """Mark a device's new-device notification as sent."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE devices SET new_device_notified = 1 WHERE mac = ?",
+            (mac,)
         )
         await db.commit()
 
@@ -527,6 +541,7 @@ async def get_settings() -> Settings:
         notify_watched_leave=settings_dict.get("notify_watched_leave", "1") == "1",
         watched_absence_minutes=int(settings_dict.get("watched_absence_minutes", "30")),
         watched_return_minutes=int(settings_dict.get("watched_return_minutes", "5")),
+        new_device_threshold_minutes=int(settings_dict.get("new_device_threshold_minutes", "0")),
         auth_enabled=settings_dict.get("auth_enabled", "0") == "1",
         auth_username=settings_dict.get("auth_username"),
         auth_password_hash=settings_dict.get("auth_password_hash"),
@@ -554,6 +569,7 @@ async def update_settings(settings: Settings) -> None:
             ("notify_watched_leave", "1" if settings.notify_watched_leave else "0"),
             ("watched_absence_minutes", str(settings.watched_absence_minutes)),
             ("watched_return_minutes", str(settings.watched_return_minutes)),
+            ("new_device_threshold_minutes", str(settings.new_device_threshold_minutes)),
         ]
         for key, value in settings_pairs:
             await db.execute(
