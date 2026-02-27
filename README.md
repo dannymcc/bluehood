@@ -430,6 +430,7 @@ Contributions welcome! Please open an issue or PR on GitHub.
 - [@jacobpretorius](https://github.com/jacobpretorius) (Jacob Pretorius) - CSV export JS fix (#14), click to open setting (#16)
 - [@unqualifiedkoala](https://github.com/unqualifiedkoala) - Documented BLE adapter requirements
 - [@dazzag24](https://github.com/dazzag24) - Reported macOS address format issue
+- [@GeiserX](https://github.com/GeiserX) (Sergio Fernández) - Prometheus metrics exporter (#35), non-blocking vendor DB fix (#37), dual-adapter scanning (#33)
 
 ## License
 
