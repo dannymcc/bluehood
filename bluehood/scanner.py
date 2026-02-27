@@ -145,6 +145,12 @@ def list_adapters() -> list[BluetoothAdapter]:
 VENDOR_DB_MAX_AGE_DAYS = 7
 VENDOR_DB_UPDATE_TIMEOUT = 30
 
+_PROCESS_START = time.monotonic()
+_MIN_UPTIME_FOR_EXIT = 180  # 3 min — prevents crash loops after failed recovery
+_BACKOFF_SLEEP = 300  # 5 min sleep if restart didn't help
+
+RFKILL_SYSFS = "/sys/class/rfkill/rfkill0/state"
+
 
 class BluetoothScanner:
     """Bluetooth LE and classic scanner."""
@@ -165,6 +171,7 @@ class BluetoothScanner:
         self._vendor_cache: dict[str, Optional[str]] = {}
         self._vendors_updated = False
         self._vendor_update_task: Optional[asyncio.Task] = None
+        self._ble_stuck = False
 
     def _is_vendor_db_fresh(self) -> bool:
         """Check if the cached vendor DB exists and is less than 7 days old."""
@@ -304,12 +311,61 @@ class BluetoothScanner:
             logger.debug(f"Vendor API error for {oui}: {e}")
             return None
 
+    def _rfkill_toggle(self) -> bool:
+        """Toggle Bluetooth via sysfs rfkill (no binary/fork needed).
+
+        Writing to sysfs is a simple file write — works even when FDs
+        are nearly exhausted, unlike subprocess.run which needs to fork.
+        """
+        try:
+            with open(RFKILL_SYSFS, "w") as f:
+                f.write("1")  # soft-block
+            time.sleep(2)
+            with open(RFKILL_SYSFS, "w") as f:
+                f.write("0")  # unblock
+            time.sleep(3)
+            logger.info("Bluetooth adapter reset via sysfs rfkill")
+            return True
+        except Exception as e:
+            logger.error(f"sysfs rfkill toggle failed: {e}")
+            return False
+
+    def _recover_and_exit(self) -> None:
+        """Reset Bluetooth adapter and exit for a clean restart.
+
+        Why exit? Each failed BleakScanner.discover() leaks D-Bus file
+        descriptors that can't be reclaimed without a new process.
+        rfkill clears BlueZ state; exit clears leaked FDs.
+
+        Crash-loop prevention: if uptime < 3 min, the previous restart
+        didn't help — sleep 5 min instead of exiting again.
+        """
+        uptime = time.monotonic() - _PROCESS_START
+
+        if uptime < _MIN_UPTIME_FOR_EXIT:
+            logger.warning(
+                f"BLE stuck right after start (uptime {uptime:.0f}s). "
+                f"Sleeping {_BACKOFF_SLEEP}s before retrying."
+            )
+            self._ble_stuck = False
+            time.sleep(_BACKOFF_SLEEP)
+            return
+
+        logger.critical(
+            "BLE adapter stuck (InProgress). "
+            "Toggling rfkill and exiting for fresh D-Bus connections."
+        )
+        self._rfkill_toggle()
+        os._exit(0)
+
     async def scan_ble(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
         """Perform a Bluetooth LE scan."""
         devices: list[ScannedDevice] = []
 
+        if self._ble_stuck:
+            self._recover_and_exit()
+
         try:
-            # Build scanner kwargs
             kwargs = {
                 "timeout": duration,
                 "return_adv": True,
@@ -329,7 +385,6 @@ class BluetoothScanner:
                 mac = device.address
                 vendor = await self._get_vendor(mac)
 
-                # Capture service UUIDs for device fingerprinting
                 service_uuids = list(adv_data.service_uuids) if adv_data.service_uuids else []
 
                 devices.append(ScannedDevice(
@@ -347,6 +402,8 @@ class BluetoothScanner:
             logger.warning("BLE scan timed out (adapter may be busy)")
         except Exception as e:
             logger.error(f"BLE scan error: {e}")
+            if "InProgress" in str(e):
+                self._ble_stuck = True
 
         return devices
 
