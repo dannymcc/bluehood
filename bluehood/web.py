@@ -1966,6 +1966,11 @@ SETTINGS_TEMPLATE = """
         .theme-toggle { background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.75rem; padding: 0.3rem 0.5rem; cursor: pointer; border-radius: 3px; transition: all 0.1s; }
         .theme-toggle:hover { color: var(--text-primary); border-color: var(--border-active, #999); }
 
+        .config-nav { background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); display: flex; justify-content: center; gap: 0; }
+        .config-nav a { color: var(--text-muted); text-decoration: none; font-size: 0.7rem; padding: 0.75rem 1.25rem; text-transform: uppercase; letter-spacing: 0.1em; border-bottom: 2px solid transparent; transition: all 0.15s; }
+        .config-nav a:hover { color: var(--text-secondary); }
+        .config-nav a.active { color: var(--text-primary); border-bottom-color: var(--accent-red); }
+
         .main { max-width: 700px; margin: 0 auto; padding: 2rem 1rem; }
         .page-header { margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border-color); }
         .page-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.15em; color: var(--text-muted); margin-bottom: 0.5rem; }
@@ -1987,6 +1992,7 @@ SETTINGS_TEMPLATE = """
         .form-check-desc { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem; }
 
         .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        .form-hint { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem; }
 
         .btn { padding: 0.6rem 1.25rem; border-radius: 3px; font-family: var(--font-mono); font-size: 0.7rem; font-weight: 500; cursor: pointer; border: 1px solid var(--border-color); background: var(--bg-tertiary); color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; text-decoration: none; display: inline-block; transition: all 0.1s; }
         .btn:hover { background: var(--bg-hover); color: var(--text-primary); }
@@ -1998,6 +2004,8 @@ SETTINGS_TEMPLATE = """
         .status-msg { padding: 0.75rem 1rem; border-radius: 3px; font-size: 0.8rem; margin-bottom: 1rem; display: none; border: 1px solid; }
         .status-msg.success { background: rgba(22, 163, 74, 0.1); color: var(--accent-green); border-color: var(--accent-green); display: block; }
         .status-msg.error { background: rgba(220, 38, 38, 0.1); color: var(--accent-red); border-color: var(--accent-red); display: block; }
+
+        .config-tab { display: none; }
 
         .footer { text-align: center; padding: 1.5rem; font-size: 0.65rem; color: var(--text-muted); border-top: 1px solid var(--border-color); }
         .footer a { color: var(--accent-red); text-decoration: none; }
@@ -2016,122 +2024,190 @@ SETTINGS_TEMPLATE = """
         <div><button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">☀</button></div>
     </header>
 
-    <main class="main">
-        <div class="page-header">
-            <div class="page-title">System Configuration</div>
-            <h1 class="page-heading">Alert Configuration</h1>
-        </div>
+    <nav class="config-nav">
+        <a href="#alerts" data-tab="alerts" class="active" onclick="switchTab('alerts')">Alerts</a>
+        <a href="#operations" data-tab="operations" onclick="switchTab('operations')">Operations</a>
+        <a href="#groups" data-tab="groups" onclick="switchTab('groups')">Groups</a>
+        <a href="#security" data-tab="security" onclick="switchTab('security')">Security</a>
+    </nav>
 
+    <main class="main">
         <div id="status-msg" class="status-msg"></div>
 
-        <form id="settings-form">
-            <div class="panel">
-                <div class="panel-header">Push Notification Channel (ntfy.sh)</div>
-                <div class="panel-body">
-                    <div class="form-group">
-                        <label class="form-label">Topic Identifier</label>
-                        <input type="text" class="form-input" id="ntfy_topic" placeholder="e.g., bluehood-ops-alerts">
-                    </div>
-                    <label class="form-check">
-                        <input type="checkbox" id="ntfy_enabled">
-                        <div>
-                            <div class="form-check-label">Enable Push Notifications</div>
-                            <div class="form-check-desc">Route alerts through ntfy.sh service</div>
-                        </div>
-                    </label>
-                </div>
+        <!-- Alerts Tab -->
+        <div class="config-tab" id="tab-alerts">
+            <div class="page-header">
+                <div class="page-title">System Configuration</div>
+                <h1 class="page-heading">Alert Configuration</h1>
             </div>
 
-            <div class="panel">
-                <div class="panel-header">Alert Triggers</div>
-                <div class="panel-body">
-                    <label class="form-check">
-                        <input type="checkbox" id="notify_new_device">
-                        <div>
-                            <div class="form-check-label">New Target Acquired</div>
-                            <div class="form-check-desc">Alert on first contact with unknown device</div>
-                        </div>
-                    </label>
-                    <div id="new-device-threshold-field" style="display: none; margin: 0.5rem 0 0.5rem 2rem;">
-                        <label class="form-label">Persistence Threshold (min)</label>
-                        <input type="number" class="form-input" id="new_device_threshold_minutes" value="0" min="0" max="1440" style="width: 120px;">
-                        <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.25rem;">0 = immediate alert, &gt;0 = alert after device persists this long</div>
-                    </div>
-                    <label class="form-check">
-                        <input type="checkbox" id="notify_watched_return">
-                        <div>
-                            <div class="form-check-label">Watched Target Returns</div>
-                            <div class="form-check-desc">Alert when monitored target re-enters range</div>
-                        </div>
-                    </label>
-                    <label class="form-check">
-                        <input type="checkbox" id="notify_watched_leave">
-                        <div>
-                            <div class="form-check-label">Watched Target Departs</div>
-                            <div class="form-check-desc">Alert when monitored target exits range</div>
-                        </div>
-                    </label>
-                </div>
-            </div>
-
-            <div class="panel">
-                <div class="panel-header">Detection Thresholds</div>
-                <div class="panel-body">
-                    <div class="form-row">
+            <form id="settings-form">
+                <div class="panel">
+                    <div class="panel-header">Push Notification Channel (ntfy.sh)</div>
+                    <div class="panel-body">
                         <div class="form-group">
-                            <label class="form-label">Absence Threshold (min)</label>
-                            <input type="number" class="form-input" id="watched_absence_minutes" value="30" min="1" max="1440">
+                            <label class="form-label">Topic Identifier</label>
+                            <input type="text" class="form-input" id="ntfy_topic" placeholder="e.g., bluehood-ops-alerts">
                         </div>
-                        <div class="form-group">
-                            <label class="form-label">Return Threshold (min)</label>
-                            <input type="number" class="form-input" id="watched_return_minutes" value="5" min="1" max="60">
+                        <label class="form-check">
+                            <input type="checkbox" id="ntfy_enabled">
+                            <div>
+                                <div class="form-check-label">Enable Push Notifications</div>
+                                <div class="form-check-desc">Route alerts through ntfy.sh service</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">Alert Triggers</div>
+                    <div class="panel-body">
+                        <label class="form-check">
+                            <input type="checkbox" id="notify_new_device">
+                            <div>
+                                <div class="form-check-label">New Target Acquired</div>
+                                <div class="form-check-desc">Alert on first contact with unknown device</div>
+                            </div>
+                        </label>
+                        <div id="new-device-threshold-field" style="display: none; margin: 0.5rem 0 0.5rem 2rem;">
+                            <label class="form-label">Persistence Threshold (min)</label>
+                            <input type="number" class="form-input" id="new_device_threshold_minutes" value="0" min="0" max="1440" style="width: 120px;">
+                            <div class="form-hint">0 = immediate alert, &gt;0 = alert after device persists this long</div>
+                        </div>
+                        <label class="form-check">
+                            <input type="checkbox" id="notify_watched_return">
+                            <div>
+                                <div class="form-check-label">Watched Target Returns</div>
+                                <div class="form-check-desc">Alert when monitored target re-enters range</div>
+                            </div>
+                        </label>
+                        <label class="form-check">
+                            <input type="checkbox" id="notify_watched_leave">
+                            <div>
+                                <div class="form-check-label">Watched Target Departs</div>
+                                <div class="form-check-desc">Alert when monitored target exits range</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">Detection Thresholds</div>
+                    <div class="panel-body">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">Absence Threshold (min)</label>
+                                <input type="number" class="form-input" id="watched_absence_minutes" value="30" min="1" max="1440">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Return Threshold (min)</label>
+                                <input type="number" class="form-input" id="watched_return_minutes" value="5" min="1" max="60">
+                            </div>
                         </div>
                     </div>
                 </div>
+
+                <div class="btn-row">
+                    <button type="submit" class="btn btn-primary">Save Configuration</button>
+                    <a href="/" class="btn">Cancel</a>
+                </div>
+            </form>
+        </div>
+
+        <!-- Operations Tab -->
+        <div class="config-tab" id="tab-operations">
+            <div class="page-header">
+                <div class="page-title">System Configuration</div>
+                <h1 class="page-heading">Operations</h1>
             </div>
 
-            <div class="btn-row">
-                <button type="submit" class="btn btn-primary">Save Configuration</button>
-                <a href="/" class="btn">Cancel</a>
-            </div>
-        </form>
+            <form id="operations-form">
+                <div class="panel">
+                    <div class="panel-header">Heartbeat Check-In</div>
+                    <div class="panel-body">
+                        <div class="form-group">
+                            <label class="form-label">Heartbeat URL</label>
+                            <input type="url" class="form-input" id="heartbeat_url" placeholder="e.g., https://uptime.example.com/api/push/abc123">
+                            <div class="form-hint">POST JSON payload with hostname, uptime, device count. Leave empty to disable.</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Interval (seconds)</label>
+                            <input type="number" class="form-input" id="heartbeat_interval" value="300" min="30" max="86400" style="width: 160px;">
+                            <div class="form-hint">How often to send heartbeat pings (default: 300s / 5 min)</div>
+                        </div>
+                    </div>
+                </div>
 
-        <div class="panel" style="margin-top: 2rem;">
-            <div class="panel-header">Device Groups</div>
-            <div class="panel-body">
-                <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">Organize targets into custom groups for easier tracking</p>
-                <div id="groups-list" style="margin-bottom: 1rem;"></div>
-                <div style="display: flex; gap: 0.5rem;">
-                    <input type="text" class="form-input" id="new-group-name" placeholder="New group name" style="flex: 1;">
-                    <input type="color" id="new-group-color" value="#3b82f6" style="width: 40px; height: 38px; border: 1px solid var(--border-color); background: var(--bg-tertiary); cursor: pointer;">
-                    <button type="button" class="btn btn-primary" onclick="createGroup()">Add Group</button>
+                <div class="panel">
+                    <div class="panel-header">Storage Rotation</div>
+                    <div class="panel-body">
+                        <div class="form-group">
+                            <label class="form-label">Prune Sightings Older Than (days)</label>
+                            <input type="number" class="form-input" id="prune_days" value="0" min="0" max="3650" style="width: 160px;">
+                            <div class="form-hint">Automatically delete sighting records older than this many days. 0 = keep forever.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="btn-row">
+                    <button type="submit" class="btn btn-primary">Save Configuration</button>
+                    <a href="/" class="btn">Cancel</a>
+                </div>
+            </form>
+        </div>
+
+        <!-- Groups Tab -->
+        <div class="config-tab" id="tab-groups">
+            <div class="page-header">
+                <div class="page-title">System Configuration</div>
+                <h1 class="page-heading">Device Groups</h1>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">Device Groups</div>
+                <div class="panel-body">
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;">Organize targets into custom groups for easier tracking</p>
+                    <div id="groups-list" style="margin-bottom: 1rem;"></div>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <input type="text" class="form-input" id="new-group-name" placeholder="New group name" style="flex: 1;">
+                        <input type="color" id="new-group-color" value="#3b82f6" style="width: 40px; height: 38px; border: 1px solid var(--border-color); background: var(--bg-tertiary); cursor: pointer;">
+                        <button type="button" class="btn btn-primary" onclick="createGroup()">Add Group</button>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <div class="panel" style="margin-top: 2rem;">
-            <div class="panel-header">Access Control</div>
-            <div class="panel-body">
-                <label class="form-check">
-                    <input type="checkbox" id="auth_enabled">
-                    <div>
-                        <div class="form-check-label">Enable Authentication</div>
-                        <div class="form-check-desc">Require login to access the dashboard</div>
+        <!-- Security Tab -->
+        <div class="config-tab" id="tab-security">
+            <div class="page-header">
+                <div class="page-title">System Configuration</div>
+                <h1 class="page-heading">Access Control</h1>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">Access Control</div>
+                <div class="panel-body">
+                    <label class="form-check">
+                        <input type="checkbox" id="auth_enabled">
+                        <div>
+                            <div class="form-check-label">Enable Authentication</div>
+                            <div class="form-check-desc">Require login to access the dashboard</div>
+                        </div>
+                    </label>
+                    <div id="auth-fields" style="display: none; margin-top: 1rem;">
+                        <div class="form-group">
+                            <label class="form-label">Username</label>
+                            <input type="text" class="form-input" id="auth_username" autocomplete="username">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Password</label>
+                            <input type="password" class="form-input" id="auth_password" autocomplete="new-password" placeholder="Enter new password">
+                        </div>
                     </div>
-                </label>
-                <div id="auth-fields" style="display: none; margin-top: 1rem;">
-                    <div class="form-group">
-                        <label class="form-label">Username</label>
-                        <input type="text" class="form-input" id="auth_username" autocomplete="username">
+                    <div class="btn-row" style="margin-top: 1rem;">
+                        <button type="button" class="btn btn-primary" onclick="saveAuthSettings()">Update Access Control</button>
+                        <button type="button" class="btn" onclick="logout()" id="logout-btn" style="display: none;">Logout</button>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">Password</label>
-                        <input type="password" class="form-input" id="auth_password" autocomplete="new-password" placeholder="Enter new password">
-                    </div>
-                </div>
-                <div class="btn-row" style="margin-top: 1rem;">
-                    <button type="button" class="btn btn-primary" onclick="saveAuthSettings()">Update Access Control</button>
-                    <button type="button" class="btn" onclick="logout()" id="logout-btn" style="display: none;">Logout</button>
                 </div>
             </div>
         </div>
@@ -2153,6 +2229,16 @@ SETTINGS_TEMPLATE = """
         }
         applyTheme(localStorage.getItem('bluehood_theme') || 'dark');
 
+        function switchTab(tab) {
+            document.querySelectorAll('.config-tab').forEach(function(t) { t.style.display = 'none'; });
+            document.querySelectorAll('.config-nav a').forEach(function(a) { a.classList.remove('active'); });
+            var tabEl = document.getElementById('tab-' + tab);
+            if (tabEl) tabEl.style.display = 'block';
+            var navEl = document.querySelector('[data-tab="' + tab + '"]');
+            if (navEl) navEl.classList.add('active');
+            history.replaceState(null, '', '#' + tab);
+        }
+
         async function loadSettings() {
             try {
                 const response = await fetch('/api/settings');
@@ -2166,12 +2252,14 @@ SETTINGS_TEMPLATE = """
                 document.getElementById('notify_watched_leave').checked = data.notify_watched_leave;
                 document.getElementById('watched_absence_minutes').value = data.watched_absence_minutes;
                 document.getElementById('watched_return_minutes').value = data.watched_return_minutes;
+                document.getElementById('heartbeat_url').value = data.heartbeat_url || '';
+                document.getElementById('heartbeat_interval').value = data.heartbeat_interval || 300;
+                document.getElementById('prune_days').value = data.prune_days || 0;
             } catch (error) { showStatus('Error loading configuration', 'error'); }
         }
 
-        async function saveSettings(e) {
-            e.preventDefault();
-            const settings = {
+        function gatherAllSettings() {
+            return {
                 ntfy_topic: document.getElementById('ntfy_topic').value,
                 ntfy_enabled: document.getElementById('ntfy_enabled').checked,
                 notify_new_device: document.getElementById('notify_new_device').checked,
@@ -2180,9 +2268,25 @@ SETTINGS_TEMPLATE = """
                 notify_watched_leave: document.getElementById('notify_watched_leave').checked,
                 watched_absence_minutes: parseInt(document.getElementById('watched_absence_minutes').value),
                 watched_return_minutes: parseInt(document.getElementById('watched_return_minutes').value),
+                heartbeat_url: document.getElementById('heartbeat_url').value,
+                heartbeat_interval: parseInt(document.getElementById('heartbeat_interval').value) || 300,
+                prune_days: parseInt(document.getElementById('prune_days').value) || 0,
             };
+        }
+
+        async function saveSettings(e) {
+            e.preventDefault();
             try {
-                const response = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
+                const response = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(gatherAllSettings()) });
+                if (response.ok) showStatus('Configuration saved', 'success');
+                else showStatus('Error saving configuration', 'error');
+            } catch (error) { showStatus('Error saving configuration', 'error'); }
+        }
+
+        async function saveOperations(e) {
+            e.preventDefault();
+            try {
+                const response = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(gatherAllSettings()) });
                 if (response.ok) showStatus('Configuration saved', 'success');
                 else showStatus('Error saving configuration', 'error');
             } catch (error) { showStatus('Error saving configuration', 'error'); }
@@ -2192,7 +2296,7 @@ SETTINGS_TEMPLATE = """
             const el = document.getElementById('status-msg');
             el.textContent = message;
             el.className = 'status-msg ' + type;
-            if (type === 'success') setTimeout(() => { el.className = 'status-msg'; }, 3000);
+            if (type === 'success') setTimeout(function() { el.className = 'status-msg'; }, 3000);
         }
 
         async function loadAuthStatus() {
@@ -2206,11 +2310,11 @@ SETTINGS_TEMPLATE = """
             } catch (error) { console.error('Error loading auth status'); }
         }
 
-        document.getElementById('notify_new_device').addEventListener('change', (e) => {
+        document.getElementById('notify_new_device').addEventListener('change', function(e) {
             document.getElementById('new-device-threshold-field').style.display = e.target.checked ? 'block' : 'none';
         });
 
-        document.getElementById('auth_enabled').addEventListener('change', (e) => {
+        document.getElementById('auth_enabled').addEventListener('change', function(e) {
             document.getElementById('auth-fields').style.display = e.target.checked ? 'block' : 'none';
         });
 
@@ -2228,7 +2332,7 @@ SETTINGS_TEMPLATE = """
                 const response = await fetch('/api/auth/setup', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled, username, password })
+                    body: JSON.stringify({ enabled: enabled, username: username, password: password })
                 });
                 if (response.ok) {
                     showStatus('Access control updated', 'success');
@@ -2254,14 +2358,32 @@ SETTINGS_TEMPLATE = """
                 const data = await response.json();
                 const container = document.getElementById('groups-list');
                 if (!data.groups || data.groups.length === 0) {
-                    container.innerHTML = '<div style="color: var(--text-muted); font-size: 0.75rem; text-align: center; padding: 1rem;">No groups created yet</div>';
+                    container.textContent = '';
+                    var empty = document.createElement('div');
+                    empty.style.cssText = 'color: var(--text-muted); font-size: 0.75rem; text-align: center; padding: 1rem;';
+                    empty.textContent = 'No groups created yet';
+                    container.appendChild(empty);
                     return;
                 }
-                container.innerHTML = data.groups.map(g => '<div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem; background: var(--bg-tertiary); border-radius: 3px; margin-bottom: 0.5rem;">' +
-                    '<div style="width: 12px; height: 12px; background: ' + g.color + '; border-radius: 2px;"></div>' +
-                    '<span style="flex: 1; font-size: 0.85rem;">' + g.name + '</span>' +
-                    '<button class="btn" style="padding: 0.25rem 0.5rem; font-size: 0.7rem;" onclick="deleteGroup(' + g.id + ')">Delete</button>' +
-                '</div>').join('');
+                container.textContent = '';
+                data.groups.forEach(function(g) {
+                    var row = document.createElement('div');
+                    row.style.cssText = 'display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem; background: var(--bg-tertiary); border-radius: 3px; margin-bottom: 0.5rem;';
+                    var swatch = document.createElement('div');
+                    swatch.style.cssText = 'width: 12px; height: 12px; border-radius: 2px; background: ' + g.color + ';';
+                    var name = document.createElement('span');
+                    name.style.cssText = 'flex: 1; font-size: 0.85rem;';
+                    name.textContent = g.name;
+                    var btn = document.createElement('button');
+                    btn.className = 'btn';
+                    btn.style.cssText = 'padding: 0.25rem 0.5rem; font-size: 0.7rem;';
+                    btn.textContent = 'Delete';
+                    btn.addEventListener('click', function() { deleteGroup(g.id); });
+                    row.appendChild(swatch);
+                    row.appendChild(name);
+                    row.appendChild(btn);
+                    container.appendChild(row);
+                });
             } catch (error) { console.error('Error loading groups'); }
         }
 
@@ -2274,7 +2396,7 @@ SETTINGS_TEMPLATE = """
                 const response = await fetch('/api/groups', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, color, icon: '📁' })
+                    body: JSON.stringify({ name: name, color: color, icon: String.fromCodePoint(128193) })
                 });
                 if (response.ok) {
                     document.getElementById('new-group-name').value = '';
@@ -2296,6 +2418,12 @@ SETTINGS_TEMPLATE = """
         }
 
         document.getElementById('settings-form').addEventListener('submit', saveSettings);
+        document.getElementById('operations-form').addEventListener('submit', saveOperations);
+
+        // Tab routing: read hash on load, default to alerts
+        var hash = window.location.hash.replace('#', '') || 'alerts';
+        switchTab(['alerts', 'operations', 'groups', 'security'].indexOf(hash) !== -1 ? hash : 'alerts');
+
         loadSettings();
         loadAuthStatus();
         loadGroups();
@@ -3055,12 +3183,16 @@ class WebServer:
             "notify_watched_leave": settings.notify_watched_leave,
             "watched_absence_minutes": settings.watched_absence_minutes,
             "watched_return_minutes": settings.watched_return_minutes,
+            "heartbeat_url": settings.heartbeat_url or "",
+            "heartbeat_interval": settings.heartbeat_interval,
+            "prune_days": settings.prune_days,
         })
 
     async def api_update_settings(self, request: web.Request) -> web.Response:
         """Update settings."""
         try:
             data = await request.json()
+            heartbeat_url = data.get("heartbeat_url", "").strip() or None
             settings = db.Settings(
                 ntfy_topic=data.get("ntfy_topic"),
                 ntfy_enabled=data.get("ntfy_enabled", False),
@@ -3070,6 +3202,9 @@ class WebServer:
                 notify_watched_leave=data.get("notify_watched_leave", True),
                 watched_absence_minutes=int(data.get("watched_absence_minutes", 30)),
                 watched_return_minutes=int(data.get("watched_return_minutes", 5)),
+                heartbeat_url=heartbeat_url,
+                heartbeat_interval=int(data.get("heartbeat_interval", 300)),
+                prune_days=int(data.get("prune_days", 0)),
             )
             await db.update_settings(settings)
 

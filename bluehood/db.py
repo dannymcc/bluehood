@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass
 
-from .config import DB_PATH
+from .config import DB_PATH, HEARTBEAT_URL, HEARTBEAT_INTERVAL, PRUNE_DAYS
 
 
 @dataclass
@@ -63,6 +63,10 @@ class Settings:
     watched_absence_minutes: int = 30  # Minutes before "left"
     watched_return_minutes: int = 5    # Minutes of absence before "return" triggers
     new_device_threshold_minutes: int = 0  # 0 = immediate, >0 = deferred
+    # Operations settings
+    heartbeat_url: Optional[str] = None       # None = disabled
+    heartbeat_interval: int = 300             # seconds
+    prune_days: int = 0                       # 0 = disabled
     # Authentication settings
     auth_enabled: bool = False
     auth_username: Optional[str] = None
@@ -542,6 +546,9 @@ async def get_settings() -> Settings:
         watched_absence_minutes=int(settings_dict.get("watched_absence_minutes", "30")),
         watched_return_minutes=int(settings_dict.get("watched_return_minutes", "5")),
         new_device_threshold_minutes=int(settings_dict.get("new_device_threshold_minutes", "0")),
+        heartbeat_url=settings_dict.get("heartbeat_url", HEARTBEAT_URL),
+        heartbeat_interval=int(settings_dict.get("heartbeat_interval", str(HEARTBEAT_INTERVAL))),
+        prune_days=int(settings_dict.get("prune_days", str(PRUNE_DAYS))),
         auth_enabled=settings_dict.get("auth_enabled", "0") == "1",
         auth_username=settings_dict.get("auth_username"),
         auth_password_hash=settings_dict.get("auth_password_hash"),
@@ -570,6 +577,9 @@ async def update_settings(settings: Settings) -> None:
             ("watched_absence_minutes", str(settings.watched_absence_minutes)),
             ("watched_return_minutes", str(settings.watched_return_minutes)),
             ("new_device_threshold_minutes", str(settings.new_device_threshold_minutes)),
+            ("heartbeat_url", settings.heartbeat_url or ""),
+            ("heartbeat_interval", str(settings.heartbeat_interval)),
+            ("prune_days", str(settings.prune_days)),
         ]
         for key, value in settings_pairs:
             await db.execute(
