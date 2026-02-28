@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
+import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -22,7 +24,7 @@ except ImportError:
 MACVENDORS_API_URL = "https://api.macvendors.com/"
 
 from .classifier import is_macos_uuid
-from .config import SCAN_DURATION, BLUETOOTH_ADAPTER, DATA_DIR
+from .config import SCAN_DURATION, BLUETOOTH_ADAPTER, CLASSIC_BLUETOOTH_ADAPTER, DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -140,34 +142,83 @@ def list_adapters() -> list[BluetoothAdapter]:
     return adapters
 
 
-class BluetoothScanner:
-    """Bluetooth LE scanner."""
+VENDOR_DB_MAX_AGE_DAYS = 7
+VENDOR_DB_UPDATE_TIMEOUT = 30
 
-    def __init__(self, adapter: Optional[str] = None):
+_PROCESS_START = time.monotonic()
+_MIN_UPTIME_FOR_EXIT = 180  # 3 min — prevents crash loops after failed recovery
+_BACKOFF_SLEEP = 300  # 5 min sleep if restart didn't help
+
+RFKILL_SYSFS = "/sys/class/rfkill/rfkill0/state"
+
+
+class BluetoothScanner:
+    """Bluetooth LE and classic scanner."""
+
+    def __init__(
+        self,
+        adapter: Optional[str] = None,
+        classic_adapter: Optional[str] = None,
+    ):
         self.adapter = adapter or BLUETOOTH_ADAPTER
+        self.classic_adapter = classic_adapter or CLASSIC_BLUETOOTH_ADAPTER or self.adapter
+        self._use_dual_adapter = (
+            self.classic_adapter is not None
+            and self.adapter is not None
+            and self.classic_adapter != self.adapter
+        )
         self._mac_lookup: Optional[AsyncMacLookup] = None
         self._vendor_cache: dict[str, Optional[str]] = {}
         self._vendors_updated = False
+        self._vendor_update_task: Optional[asyncio.Task] = None
+        self._ble_stuck = False
 
-    async def _ensure_vendor_db(self) -> None:
-        """Ensure vendor database is up to date."""
+    def _is_vendor_db_fresh(self) -> bool:
+        """Check if the cached vendor DB exists and is less than 7 days old."""
+        cache_path = BaseMacLookup.cache_path if HAS_MAC_LOOKUP else None
+        if not cache_path or not os.path.exists(cache_path):
+            return False
+        age_days = (time.time() - os.path.getmtime(cache_path)) / 86400
+        return age_days < VENDOR_DB_MAX_AGE_DAYS
+
+    def _start_vendor_db_update(self) -> None:
+        """Kick off a background vendor DB update (never blocks scanning)."""
         if self._vendors_updated or not HAS_MAC_LOOKUP:
             return
+        if self._vendor_update_task and not self._vendor_update_task.done():
+            return
 
+        if self._is_vendor_db_fresh():
+            logger.info("MAC vendor database is up to date (cached)")
+            self._vendors_updated = True
+            return
+
+        self._vendor_update_task = asyncio.create_task(self._update_vendor_db())
+
+    async def _update_vendor_db(self) -> None:
+        """Download vendor database in the background with a timeout."""
         try:
-            # Run the sync update in a thread pool to avoid event loop conflict
             logger.info("Updating MAC vendor database...")
 
             def update_sync():
                 mac_lookup = MacLookup()
                 mac_lookup.update_vendors()
 
-            await asyncio.to_thread(update_sync)
+            await asyncio.wait_for(
+                asyncio.to_thread(update_sync),
+                timeout=VENDOR_DB_UPDATE_TIMEOUT,
+            )
             self._vendors_updated = True
             logger.info("MAC vendor database updated")
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"MAC vendor database update timed out ({VENDOR_DB_UPDATE_TIMEOUT}s), "
+                "using cached/bundled data"
+            )
+            self._vendors_updated = True
         except Exception as e:
             logger.warning(f"Could not update vendor database: {e}")
-            self._vendors_updated = True  # Don't retry
+            self._vendors_updated = True
 
     def _is_randomized_mac(self, mac: str) -> bool:
         """Check if MAC address is locally administered (randomized).
@@ -206,7 +257,7 @@ class BluetoothScanner:
         if HAS_MAC_LOOKUP:
             try:
                 if self._mac_lookup is None:
-                    await self._ensure_vendor_db()
+                    self._start_vendor_db_update()
                     self._mac_lookup = AsyncMacLookup()
 
                 vendor = await self._mac_lookup.lookup(mac)
@@ -260,12 +311,61 @@ class BluetoothScanner:
             logger.debug(f"Vendor API error for {oui}: {e}")
             return None
 
+    def _rfkill_toggle(self) -> bool:
+        """Toggle Bluetooth via sysfs rfkill (no binary/fork needed).
+
+        Writing to sysfs is a simple file write — works even when FDs
+        are nearly exhausted, unlike subprocess.run which needs to fork.
+        """
+        try:
+            with open(RFKILL_SYSFS, "w") as f:
+                f.write("1")  # soft-block
+            time.sleep(2)
+            with open(RFKILL_SYSFS, "w") as f:
+                f.write("0")  # unblock
+            time.sleep(3)
+            logger.info("Bluetooth adapter reset via sysfs rfkill")
+            return True
+        except Exception as e:
+            logger.error(f"sysfs rfkill toggle failed: {e}")
+            return False
+
+    def _recover_and_exit(self) -> None:
+        """Reset Bluetooth adapter and exit for a clean restart.
+
+        Why exit? Each failed BleakScanner.discover() leaks D-Bus file
+        descriptors that can't be reclaimed without a new process.
+        rfkill clears BlueZ state; exit clears leaked FDs.
+
+        Crash-loop prevention: if uptime < 3 min, the previous restart
+        didn't help — sleep 5 min instead of exiting again.
+        """
+        uptime = time.monotonic() - _PROCESS_START
+
+        if uptime < _MIN_UPTIME_FOR_EXIT:
+            logger.warning(
+                f"BLE stuck right after start (uptime {uptime:.0f}s). "
+                f"Sleeping {_BACKOFF_SLEEP}s before retrying."
+            )
+            self._ble_stuck = False
+            time.sleep(_BACKOFF_SLEEP)
+            return
+
+        logger.critical(
+            "BLE adapter stuck (InProgress). "
+            "Toggling rfkill and exiting for fresh D-Bus connections."
+        )
+        self._rfkill_toggle()
+        os._exit(0)
+
     async def scan_ble(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
         """Perform a Bluetooth LE scan."""
         devices: list[ScannedDevice] = []
 
+        if self._ble_stuck:
+            self._recover_and_exit()
+
         try:
-            # Build scanner kwargs
             kwargs = {
                 "timeout": duration,
                 "return_adv": True,
@@ -273,13 +373,18 @@ class BluetoothScanner:
             if self.adapter:
                 kwargs["adapter"] = self.adapter
 
-            discovered = await BleakScanner.discover(**kwargs)
+            # Wrap in wait_for as a hard deadline — bleak's timeout parameter
+            # only controls the scan window duration, not the underlying D-Bus
+            # call which can block indefinitely if the adapter is busy.
+            discovered = await asyncio.wait_for(
+                BleakScanner.discover(**kwargs),
+                timeout=duration + 10,
+            )
 
             for device, adv_data in discovered.values():
                 mac = device.address
                 vendor = await self._get_vendor(mac)
 
-                # Capture service UUIDs for device fingerprinting
                 service_uuids = list(adv_data.service_uuids) if adv_data.service_uuids else []
 
                 devices.append(ScannedDevice(
@@ -293,8 +398,12 @@ class BluetoothScanner:
 
             logger.debug(f"BLE scan: found {len(devices)} devices")
 
+        except asyncio.TimeoutError:
+            logger.warning("BLE scan timed out (adapter may be busy)")
         except Exception as e:
             logger.error(f"BLE scan error: {e}")
+            if "InProgress" in str(e):
+                self._ble_stuck = True
 
         return devices
 
@@ -307,7 +416,7 @@ class BluetoothScanner:
 
         try:
             # Use hcitool for classic Bluetooth inquiry
-            adapter_arg = ["-i", self.adapter] if self.adapter else []
+            adapter_arg = ["-i", self.classic_adapter] if self.classic_adapter else []
 
             # Run inquiry scan
             proc = await asyncio.create_subprocess_exec(
@@ -385,22 +494,47 @@ class BluetoothScanner:
             return None
 
     async def scan(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
-        """Perform both BLE and classic Bluetooth scans."""
-        # Run both scans concurrently
-        ble_task = asyncio.create_task(self.scan_ble(duration))
-        classic_task = asyncio.create_task(self.scan_classic())
+        """Perform both BLE and classic Bluetooth scans.
 
-        ble_devices, classic_devices = await asyncio.gather(
-            ble_task, classic_task, return_exceptions=True
-        )
+        When a dedicated classic adapter is configured, scans run concurrently
+        since they use separate hardware with no contention. Otherwise, scans
+        run sequentially (BLE first, then classic) to avoid locking the shared
+        adapter in INQUIRY mode which blocks BLE discovery via D-Bus.
 
-        # Handle any exceptions
-        if isinstance(ble_devices, Exception):
-            logger.error(f"BLE scan failed: {ble_devices}")
-            ble_devices = []
-        if isinstance(classic_devices, Exception):
-            logger.debug(f"Classic scan failed: {classic_devices}")
-            classic_devices = []
+        See: https://github.com/dannymcc/bluehood/issues/30
+        """
+        ble_devices: list[ScannedDevice] = []
+        classic_devices: list[ScannedDevice] = []
+
+        if self._use_dual_adapter:
+            # Separate adapters — safe to run concurrently
+            ble_task = asyncio.create_task(self.scan_ble(duration))
+            classic_task = asyncio.create_task(self.scan_classic())
+
+            results = await asyncio.gather(
+                ble_task, classic_task, return_exceptions=True
+            )
+
+            if isinstance(results[0], Exception):
+                logger.error(f"BLE scan failed: {results[0]}")
+            else:
+                ble_devices = results[0]
+
+            if isinstance(results[1], Exception):
+                logger.debug(f"Classic scan failed: {results[1]}")
+            else:
+                classic_devices = results[1]
+        else:
+            # Same adapter — run sequentially to avoid contention
+            try:
+                ble_devices = await self.scan_ble(duration)
+            except Exception as e:
+                logger.error(f"BLE scan failed: {e}")
+
+            try:
+                classic_devices = await self.scan_classic()
+            except Exception as e:
+                logger.debug(f"Classic scan failed: {e}")
 
         # Merge results, preferring BLE data if device seen in both
         seen_macs = set()

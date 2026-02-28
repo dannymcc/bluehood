@@ -110,15 +110,33 @@ class NotificationManager:
         now = datetime.now()
 
         # Check for new device notification
-        if is_new and self._settings.notify_new_device:
+        if self._settings.notify_new_device and not device.new_device_notified:
+            threshold = self._settings.new_device_threshold_minutes
             name = device.friendly_name or device.vendor or device.mac
-            await self._send_notification(
-                title="New Device Detected",
-                message=f"{name} ({device.mac})\nType: {device.device_type or 'Unknown'}",
-                priority=3,
-                tags=["new", "bluetooth"],
-            )
-            return
+
+            if threshold == 0 and is_new:
+                # Immediate mode: notify on first sighting
+                await self._send_notification(
+                    title="New Device Detected",
+                    message=f"{name} ({device.mac})\nType: {device.device_type or 'Unknown'}",
+                    priority=3,
+                    tags=["new", "bluetooth"],
+                )
+                await db.mark_new_device_notified(device.mac)
+                return
+            elif threshold > 0 and not is_new and device.first_seen:
+                # Deferred mode: notify once device has persisted long enough
+                elapsed = (now - device.first_seen).total_seconds() / 60
+                if elapsed >= threshold:
+                    duration_str = self._format_duration(elapsed)
+                    await self._send_notification(
+                        title="Persistent Device Detected",
+                        message=f"{name} ({device.mac})\nPresent for {duration_str}\nType: {device.device_type or 'Unknown'}",
+                        priority=4,
+                        tags=["warning", "bluetooth"],
+                    )
+                    await db.mark_new_device_notified(device.mac)
+                    return
 
         # Check for watched device notifications
         if device.watched:

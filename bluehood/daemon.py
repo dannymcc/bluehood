@@ -5,13 +5,17 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
-from . import db
-from .config import SCAN_INTERVAL, SOCKET_PATH
+import aiohttp
+
+from . import db, __version__
+from .config import SCAN_INTERVAL, SOCKET_PATH, METRICS_PORT
 from .scanner import BluetoothScanner, ScannedDevice, list_adapters
 from .web import WebServer
 from .notifications import NotificationManager
@@ -27,18 +31,27 @@ logger = logging.getLogger(__name__)
 class BluehoodDaemon:
     """Main daemon process for Bluetooth scanning."""
 
-    def __init__(self, adapter: Optional[str] = None, web_port: Optional[int] = None):
-        self.scanner = BluetoothScanner(adapter=adapter)
+    def __init__(self, adapter: Optional[str] = None, classic_adapter: Optional[str] = None, web_port: Optional[int] = None, metrics_port: Optional[int] = None):
+        self.scanner = BluetoothScanner(adapter=adapter, classic_adapter=classic_adapter)
         self.running = False
         self.clients: list[asyncio.StreamWriter] = []
         self._server: asyncio.Server | None = None
         self._web_port = web_port
         self._web_server: WebServer | None = None
         self._notifications = NotificationManager()
+        self._metrics = None
+        self._metrics_port = metrics_port
+        self._http_session: aiohttp.ClientSession | None = None
+        self._start_time = time.monotonic()
 
     async def start(self) -> None:
         """Start the daemon."""
         logger.info("Starting bluehood daemon...")
+        if self.scanner._use_dual_adapter:
+            logger.info(f"Dual-adapter mode: BLE on {self.scanner.adapter}, classic on {self.scanner.classic_adapter}")
+        else:
+            adapter = self.scanner.adapter or "auto"
+            logger.info(f"Single-adapter mode: {adapter} (BLE and classic scans run sequentially)")
 
         # Initialize database
         await db.init_db()
@@ -61,9 +74,24 @@ class BluehoodDaemon:
             await self._web_server.start()
             logger.info(f"Web dashboard available at http://0.0.0.0:{self._web_port}")
 
-        # Start scanning and absence checking
+        # Start Prometheus metrics exporter (requires `pip install bluehood[metrics]`)
+        if self._metrics_port:
+            try:
+                from .prometheus import MetricsExporter
+                self._metrics = MetricsExporter(port=self._metrics_port, version=__version__)
+                self._metrics.start()
+            except ImportError:
+                logger.error("prometheus-client not installed. Install with: pip install bluehood[metrics]")
+                self._metrics = None
+
+        # Start scanning and background loops
         self.running = True
+        self._http_session = aiohttp.ClientSession()
         asyncio.create_task(self._absence_check_loop())
+        if self._metrics:
+            asyncio.create_task(self._metrics_update_loop())
+        asyncio.create_task(self._heartbeat_loop())
+        asyncio.create_task(self._storage_prune_loop())
         await self._scan_loop()
 
     async def stop(self) -> None:
@@ -87,6 +115,10 @@ class BluehoodDaemon:
 
         # Stop notifications
         await self._notifications.stop()
+
+        # Close HTTP session
+        if self._http_session:
+            await self._http_session.close()
 
         # Remove socket file
         if SOCKET_PATH.exists():
@@ -304,8 +336,11 @@ class BluehoodDaemon:
 
         while self.running:
             try:
+                start_ts = time.monotonic()
                 devices = await self.scanner.scan()
+                duration = time.monotonic() - start_ts
 
+                new_count = 0
                 for device in devices:
                     db_device, is_new = await db.upsert_device(
                         mac=device.mac,
@@ -316,9 +351,16 @@ class BluehoodDaemon:
                         bt_type=device.bt_type,
                         device_class=device.device_class,
                     )
+                    if is_new:
+                        new_count += 1
 
                     # Trigger notification checks
                     await self._notifications.on_device_seen(db_device, is_new)
+
+                if self._metrics:
+                    ble_count = sum(1 for d in devices if d.bt_type == "ble")
+                    classic_count = sum(1 for d in devices if d.bt_type == "classic")
+                    self._metrics.on_scan_complete(devices, ble_count, classic_count, duration, new_count)
 
                 # Notify connected clients
                 await self._notify_clients({
@@ -328,8 +370,20 @@ class BluehoodDaemon:
 
             except Exception as e:
                 logger.error(f"Scan error: {e}")
+                if self._metrics:
+                    self._metrics.on_scan_error("scan")
 
             await asyncio.sleep(SCAN_INTERVAL)
+
+    async def _metrics_update_loop(self) -> None:
+        """Periodically update database-derived metrics."""
+        while self.running:
+            try:
+                if self._metrics:
+                    await self._metrics.update_db_metrics()
+            except Exception as e:
+                logger.warning(f"Metrics update error: {e}")
+            await asyncio.sleep(60)
 
     async def _absence_check_loop(self) -> None:
         """Periodically check for absent watched devices."""
@@ -339,6 +393,53 @@ class BluehoodDaemon:
             except Exception as e:
                 logger.error(f"Absence check error: {e}")
             await asyncio.sleep(60)  # Check every minute
+
+    async def _heartbeat_loop(self) -> None:
+        """Periodically POST a heartbeat to the configured URL."""
+        while self.running:
+            try:
+                settings = await db.get_settings()
+                url = settings.heartbeat_url
+                interval = settings.heartbeat_interval
+                if url:
+                    device_count = len(await db.get_all_devices(include_ignored=True))
+                    payload = {
+                        "hostname": platform.node(),
+                        "uptime_seconds": int(time.monotonic() - self._start_time),
+                        "device_count": device_count,
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "version": __version__,
+                    }
+                    async with self._http_session.post(
+                        url,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status >= 400:
+                            logger.warning(f"Heartbeat returned HTTP {resp.status}")
+                    await asyncio.sleep(interval)
+                else:
+                    await asyncio.sleep(60)  # Re-check for config changes
+            except Exception as e:
+                logger.warning(f"Heartbeat failed: {e}")
+                await asyncio.sleep(60)
+
+    async def _storage_prune_loop(self) -> None:
+        """Periodically prune old sightings to free storage."""
+        while self.running:
+            try:
+                settings = await db.get_settings()
+                prune_days = settings.prune_days
+                if prune_days > 0:
+                    deleted = await db.cleanup_old_sightings(prune_days)
+                    if deleted:
+                        logger.info(f"Pruned {deleted} sightings older than {prune_days} days")
+                    await asyncio.sleep(3600)  # Once per hour
+                else:
+                    await asyncio.sleep(300)  # Re-check for config changes
+            except Exception as e:
+                logger.warning(f"Storage prune error: {e}")
+                await asyncio.sleep(300)
 
     async def _notify_clients(self, event: dict) -> None:
         """Send an event to all connected clients."""
@@ -358,7 +459,12 @@ def main() -> None:
     )
     parser.add_argument(
         "-a", "--adapter",
-        help="Bluetooth adapter to use (e.g., hci0)"
+        help="Bluetooth adapter for BLE scanning (e.g., hci0)"
+    )
+    parser.add_argument(
+        "--classic-adapter",
+        help="Separate adapter for classic Bluetooth scanning (e.g., hci1). "
+             "When set to a different adapter, BLE and classic scans run concurrently."
     )
     parser.add_argument(
         "-l", "--list-adapters",
@@ -376,6 +482,12 @@ def main() -> None:
         default=8080,
         help="Web dashboard port (default: 8080)"
     )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=None,
+        help="Prometheus metrics port (default: disabled, env: BLUEHOOD_METRICS_PORT)"
+    )
     args = parser.parse_args()
 
     if args.list_adapters:
@@ -389,7 +501,8 @@ def main() -> None:
         return
 
     web_port = None if args.no_web else args.port
-    daemon = BluehoodDaemon(adapter=args.adapter, web_port=web_port)
+    metrics_port = args.metrics_port or METRICS_PORT
+    daemon = BluehoodDaemon(adapter=args.adapter, classic_adapter=args.classic_adapter, web_port=web_port, metrics_port=metrics_port)
     try:
         asyncio.run(daemon.start())
     except KeyboardInterrupt:

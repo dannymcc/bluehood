@@ -1,6 +1,5 @@
 """Web server for the Bluehood dashboard."""
 
-import asyncio
 import hashlib
 import logging
 import math
@@ -11,7 +10,7 @@ from typing import Optional
 from aiohttp import web
 
 from .. import db
-from ..classifier import classify_device, get_type_icon, get_type_label, get_uuid_names
+from ..classifier import classify_device, get_type_icon, get_type_label, get_all_types, is_randomized_mac, is_macos_uuid, get_uuid_names
 from ..patterns import generate_hourly_heatmap, generate_daily_heatmap
 from .templates import ABOUT_TEMPLATE, HTML_TEMPLATE, LOGIN_TEMPLATE, SETTINGS_TEMPLATE
 
@@ -153,20 +152,18 @@ class WebServer:
         sort_column = request.query.get("sort", "last_seen")
         sort_direction = request.query.get("direction", "desc")
 
-        (devices, total), stats, groups = await asyncio.gather(
-            db.get_devices_page(
-                page=page,
-                page_size=page_size,
-                include_ignored=True,
-                device_filter=device_filter,
-                search=search,
-                sort_column=sort_column,
-                sort_direction=sort_direction,
-                exclude_randomized=True,
-            ),
-            db.get_dashboard_stats(include_ignored=True),
-            db.get_groups(),
+        devices, total = await db.get_devices_page(
+            page=page,
+            page_size=page_size,
+            include_ignored=True,
+            device_filter=device_filter,
+            search=search,
+            sort_column=sort_column,
+            sort_direction=sort_direction,
+            exclude_randomized=True,
         )
+        stats = await db.get_dashboard_stats(include_ignored=True)
+        groups = await db.get_groups()
         group_lookup = {g.id: g for g in groups}
 
         total_pages = max(1, math.ceil(total / page_size)) if total else 1
@@ -500,24 +497,33 @@ class WebServer:
             "ntfy_topic": settings.ntfy_topic or "",
             "ntfy_enabled": settings.ntfy_enabled,
             "notify_new_device": settings.notify_new_device,
+            "new_device_threshold_minutes": settings.new_device_threshold_minutes,
             "notify_watched_return": settings.notify_watched_return,
             "notify_watched_leave": settings.notify_watched_leave,
             "watched_absence_minutes": settings.watched_absence_minutes,
             "watched_return_minutes": settings.watched_return_minutes,
+            "heartbeat_url": settings.heartbeat_url or "",
+            "heartbeat_interval": settings.heartbeat_interval,
+            "prune_days": settings.prune_days,
         })
 
     async def api_update_settings(self, request: web.Request) -> web.Response:
         """Update settings."""
         try:
             data = await request.json()
+            heartbeat_url = data.get("heartbeat_url", "").strip() or None
             settings = db.Settings(
                 ntfy_topic=data.get("ntfy_topic"),
                 ntfy_enabled=data.get("ntfy_enabled", False),
                 notify_new_device=data.get("notify_new_device", False),
+                new_device_threshold_minutes=int(data.get("new_device_threshold_minutes", 0)),
                 notify_watched_return=data.get("notify_watched_return", True),
                 notify_watched_leave=data.get("notify_watched_leave", True),
                 watched_absence_minutes=int(data.get("watched_absence_minutes", 30)),
                 watched_return_minutes=int(data.get("watched_return_minutes", 5)),
+                heartbeat_url=heartbeat_url,
+                heartbeat_interval=int(data.get("heartbeat_interval", 300)),
+                prune_days=int(data.get("prune_days", 0)),
             )
             await db.update_settings(settings)
 
