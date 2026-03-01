@@ -151,6 +151,10 @@ _BACKOFF_SLEEP = 300  # 5 min sleep if restart didn't help
 
 RFKILL_SYSFS = "/sys/class/rfkill/rfkill0/state"
 
+# Maximum consecutive USB resets before giving up and exiting
+_MAX_USB_RESETS = 3
+_USB_RESET_COOLDOWN = 30  # seconds between reset attempts
+
 
 class BluetoothScanner:
     """Bluetooth LE and classic scanner."""
@@ -172,6 +176,9 @@ class BluetoothScanner:
         self._vendors_updated = False
         self._vendor_update_task: Optional[asyncio.Task] = None
         self._ble_stuck = False
+        self._usb_reset_count = 0
+        self._last_usb_reset = 0.0
+        self._adapter_usb_path: Optional[str] = None  # cached sysfs USB path
 
     def _is_vendor_db_fresh(self) -> bool:
         """Check if the cached vendor DB exists and is less than 7 days old."""
@@ -311,6 +318,148 @@ class BluetoothScanner:
             logger.debug(f"Vendor API error for {oui}: {e}")
             return None
 
+    def _find_usb_device_path(self, adapter: str) -> Optional[str]:
+        """Find the sysfs USB device path for a given HCI adapter.
+
+        Maps e.g. 'hci1' → '1-1.5' by reading the symlink at
+        /sys/class/bluetooth/hci1/device → ../../usb1/1-1/1-1.5/1-1.5:1.0
+        and extracting the USB device portion.
+
+        Returns None for non-USB adapters (e.g. UART/SDIO).
+        """
+        if self._adapter_usb_path is not None:
+            return self._adapter_usb_path
+
+        try:
+            device_link = os.path.realpath(f"/sys/class/bluetooth/{adapter}/device")
+            # USB device paths look like /sys/devices/.../1-1.5:1.0
+            # We want the parent: 1-1.5
+            base = os.path.basename(device_link)
+            if ":" in base:
+                # Strip interface suffix (e.g. "1-1.5:1.0" → "1-1.5")
+                usb_path = base.split(":")[0]
+                # Verify it's actually a USB device by checking the driver path
+                driver_path = f"/sys/bus/usb/drivers/usb/{usb_path}"
+                if os.path.exists(driver_path):
+                    self._adapter_usb_path = usb_path
+                    return usb_path
+        except (OSError, IndexError):
+            pass
+
+        return None
+
+    def _usb_reset_adapter(self, adapter: str) -> bool:
+        """Reset a USB Bluetooth adapter by unbinding and rebinding it.
+
+        This is the correct recovery for USB adapters that go DOWN
+        (org.bluez.Error.NotReady). Unlike rfkill (which soft-blocks
+        the radio), USB unbind/bind power-cycles the device at the
+        USB stack level, forcing the kernel driver to re-initialize.
+        """
+        usb_path = self._find_usb_device_path(adapter)
+        if not usb_path:
+            logger.warning(f"Cannot find USB device path for {adapter} — not a USB adapter?")
+            return False
+
+        try:
+            logger.info(f"Resetting USB device {usb_path} for adapter {adapter}")
+
+            # Unbind
+            with open("/sys/bus/usb/drivers/usb/unbind", "w") as f:
+                f.write(usb_path)
+            time.sleep(2)
+
+            # Rebind
+            with open("/sys/bus/usb/drivers/usb/bind", "w") as f:
+                f.write(usb_path)
+            time.sleep(3)
+
+            # Verify adapter came back UP
+            try:
+                result = subprocess.run(
+                    ["hciconfig", adapter],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if "UP RUNNING" in result.stdout:
+                    logger.info(f"USB adapter {adapter} recovered successfully")
+                    self._usb_reset_count = 0
+                    self._adapter_usb_path = None  # re-discover next time
+                    return True
+
+                # Adapter exists but not UP — try bringing it up
+                subprocess.run(
+                    ["hciconfig", adapter, "up"],
+                    capture_output=True, timeout=5,
+                )
+                time.sleep(1)
+                result = subprocess.run(
+                    ["hciconfig", adapter],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if "UP RUNNING" in result.stdout:
+                    logger.info(f"USB adapter {adapter} recovered after hciconfig up")
+                    self._usb_reset_count = 0
+                    self._adapter_usb_path = None
+                    return True
+
+            except Exception as e:
+                logger.warning(f"Post-reset verification failed: {e}")
+
+            logger.error(f"USB adapter {adapter} did not recover after reset")
+            return False
+
+        except PermissionError:
+            logger.error(
+                f"Permission denied writing to USB sysfs for {usb_path}. "
+                "Container must run with --privileged or appropriate capabilities."
+            )
+            return False
+        except Exception as e:
+            logger.error(f"USB reset failed for {adapter}: {e}")
+            return False
+
+    def _recover_adapter(self, adapter: str, error_type: str) -> bool:
+        """Attempt to recover a failed Bluetooth adapter.
+
+        Chooses the right recovery strategy based on adapter type:
+        - USB adapters: unbind/bind cycle (for NotReady/DOWN errors)
+        - UART/internal adapters: rfkill toggle (for soft-block errors)
+
+        Returns True if recovery succeeded without needing a process exit.
+        """
+        now = time.monotonic()
+
+        # Rate-limit resets
+        if now - self._last_usb_reset < _USB_RESET_COOLDOWN:
+            logger.debug("Skipping adapter reset — cooldown period")
+            return False
+
+        self._last_usb_reset = now
+        self._usb_reset_count += 1
+
+        if self._usb_reset_count > _MAX_USB_RESETS:
+            logger.error(
+                f"Adapter {adapter} failed {self._usb_reset_count} times. "
+                "Falling back to process exit for clean D-Bus state."
+            )
+            return False
+
+        # Try USB reset first (works for USB dongles)
+        usb_path = self._find_usb_device_path(adapter)
+        if usb_path:
+            logger.warning(
+                f"BLE adapter {adapter} error ({error_type}), "
+                f"attempting USB reset (attempt {self._usb_reset_count}/{_MAX_USB_RESETS})"
+            )
+            return self._usb_reset_adapter(adapter)
+
+        # Fall back to rfkill for non-USB adapters
+        logger.warning(
+            f"BLE adapter {adapter} error ({error_type}), "
+            f"attempting rfkill toggle"
+        )
+        return self._rfkill_toggle()
+
     def _rfkill_toggle(self) -> bool:
         """Toggle Bluetooth via sysfs rfkill (no binary/fork needed).
 
@@ -333,13 +482,23 @@ class BluetoothScanner:
     def _recover_and_exit(self) -> None:
         """Reset Bluetooth adapter and exit for a clean restart.
 
-        Why exit? Each failed BleakScanner.discover() leaks D-Bus file
+        First attempts in-process recovery (USB reset for USB adapters,
+        rfkill for internal adapters). Only exits if in-process recovery
+        fails, since each failed BleakScanner.discover() leaks D-Bus file
         descriptors that can't be reclaimed without a new process.
-        rfkill clears BlueZ state; exit clears leaked FDs.
 
         Crash-loop prevention: if uptime < 3 min, the previous restart
         didn't help — sleep 5 min instead of exiting again.
         """
+        adapter = self.adapter or "hci0"
+
+        # Try in-process recovery first (USB reset or rfkill)
+        if self._recover_adapter(adapter, "InProgress"):
+            logger.info("Adapter recovered in-process, continuing scan loop")
+            self._ble_stuck = False
+            return
+
+        # In-process recovery failed — fall back to exit
         uptime = time.monotonic() - _PROCESS_START
 
         if uptime < _MIN_UPTIME_FOR_EXIT:
@@ -352,7 +511,7 @@ class BluetoothScanner:
             return
 
         logger.critical(
-            "BLE adapter stuck (InProgress). "
+            "BLE adapter stuck (InProgress) and in-process recovery failed. "
             "Toggling rfkill and exiting for fresh D-Bus connections."
         )
         self._rfkill_toggle()
@@ -401,9 +560,21 @@ class BluetoothScanner:
         except asyncio.TimeoutError:
             logger.warning("BLE scan timed out (adapter may be busy)")
         except Exception as e:
+            error_str = str(e)
             logger.error(f"BLE scan error: {e}")
-            if "InProgress" in str(e):
+            if "InProgress" in error_str:
                 self._ble_stuck = True
+            elif "NotReady" in error_str or "Resource Not Ready" in error_str:
+                # Adapter went DOWN (common with USB dongles on SBCs).
+                # Attempt immediate in-process recovery instead of waiting
+                # for the next scan cycle to trigger _recover_and_exit.
+                adapter = self.adapter or "hci0"
+                logger.warning(f"Adapter {adapter} not ready — attempting recovery")
+                if self._recover_adapter(adapter, "NotReady"):
+                    logger.info("Adapter recovered, will retry on next scan cycle")
+                else:
+                    # Recovery failed — mark as stuck so next cycle exits
+                    self._ble_stuck = True
 
         return devices
 
