@@ -13,9 +13,16 @@ services:
       - /var/run/dbus:/var/run/dbus:ro
       - bluehood-data:/data
 
-    # Optional: specify Bluetooth adapter (default: auto-detect)
+    # Optional: match container user to your host user for bind-mount permissions
     # environment:
+    #   - PUID=1000            # Match your host user: id -u
+    #   - PGID=1000            # Match your host group: id -g
+    #   - TZ=Europe/London     # Set container timezone
     #   - BLUEHOOD_ADAPTER=hci0
+    #   - BLUEHOOD_CLASSIC_ADAPTER=hci1
+    #   - BLUEHOOD_HEARTBEAT_URL=https://hc-ping.com/your-uuid  # Heartbeat check-in URL
+    #   - BLUEHOOD_HEARTBEAT_INTERVAL=300                        # Heartbeat interval in seconds
+    #   - BLUEHOOD_PRUNE_DAYS=90                                 # Auto-delete sightings older than N days
 
     # Web dashboard available at http://localhost:8080
 

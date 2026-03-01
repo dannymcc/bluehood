@@ -1,21 +1,14 @@
 [Unit]
-Description=Bluehood Bluetooth Neighborhood Monitor Daemon
-After=bluetooth.target
+Description=Bluehood Bluetooth Monitor
+After=bluetooth.target network.target
+Wants=bluetooth.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python -m bluehood.daemon
+ExecStart=/usr/bin/python3 -m bluehood.daemon
 Restart=on-failure
-RestartSec=5
-
-# Security hardening
-NoNewPrivileges=false
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%h/.local/share/bluehood /tmp
-
-# Bluetooth requires some capabilities
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+RestartSec=10
+Environment=BLUEHOOD_DATA_DIR=/var/lib/bluehood
 
 [Install]
 WantedBy=multi-user.target

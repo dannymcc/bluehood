@@ -18,7 +18,7 @@
 *Main dashboard showing device list with filtering, search, and real-time statistics*
 
 ![Settings](screenshots/settings.png)
-*Configuration page for push notifications and alert triggers*
+*Tabbed configuration page — Alerts, Operations, Groups, and Security*
 
 ![About](screenshots/about.png)
 *Intel page with project information and capabilities overview*
@@ -85,6 +85,11 @@ Bluehood is a Bluetooth scanner that:
 - Notify when watched devices leave
 - Configurable thresholds for arrival/departure
 
+### Operations
+- **Heartbeat check-in** — periodically POST status to an uptime monitoring service (e.g., Uptime Kuma, Healthchecks.io)
+- **Storage rotation** — automatically prune sightings older than a configurable number of days
+- Both configurable from the web UI or via environment variables
+
 ### Web Interface
 - **Compact/Detailed view toggle** for different display preferences
 - **Screenshot mode** to obfuscate MACs and names for safe sharing
@@ -145,9 +150,16 @@ The web dashboard will be available at **http://localhost:8080**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BLUEHOOD_ADAPTER` | auto | Bluetooth adapter (e.g., `hci0`) |
+| `PUID` | `1000` | UID for the container user — set to match your host user (`id -u`) when using bind mounts |
+| `PGID` | `1000` | GID for the container user — set to match your host group (`id -g`) when using bind mounts |
+| `TZ` | UTC | Container timezone (e.g., `Europe/London`) |
+| `BLUEHOOD_ADAPTER` | auto | Bluetooth adapter for BLE scanning (e.g., `hci0`) |
+| `BLUEHOOD_CLASSIC_ADAPTER` | same as `BLUEHOOD_ADAPTER` | Separate adapter for classic Bluetooth scanning (e.g., `hci1`). When set to a different adapter, BLE and classic scans run concurrently. |
 | `BLUEHOOD_DATA_DIR` | `/data` | Database storage directory |
 | `BLUEHOOD_METRICS_PORT` | disabled | Prometheus metrics port (e.g., `9199`) |
+| `BLUEHOOD_HEARTBEAT_URL` | disabled | URL to POST heartbeat check-ins (e.g., a healthchecks.io or uptime-kuma push URL) |
+| `BLUEHOOD_HEARTBEAT_INTERVAL` | `300` | Seconds between heartbeat check-ins |
+| `BLUEHOOD_PRUNE_DAYS` | `0` (disabled) | Auto-delete sightings older than N days to free storage |
 
 ### Bluetooth Adapter Requirements
 
@@ -233,6 +245,9 @@ bluehood --port 9000
 # Use a specific Bluetooth adapter
 bluehood --adapter hci1
 
+# Use separate adapters for BLE and classic scanning (concurrent)
+bluehood --adapter hci0 --classic-adapter hci1
+
 # List available adapters
 bluehood --list-adapters
 
@@ -251,7 +266,7 @@ The dashboard provides:
 - **Device filters** by type (phones, audio, IoT, etc.) and watched status
 - **Search** by MAC, vendor, or name
 - **Date range search** to find devices seen in a specific time window
-- **Settings** for configuring notifications, groups, and authentication
+- **Tabbed settings** page — Alerts, Operations, Groups, and Security (direct-link via hash, e.g. `/settings#operations`)
 - **Device details** modal with:
   - BLE service fingerprints
   - Hourly/daily activity heatmaps
@@ -301,6 +316,8 @@ Data is stored in `~/.local/share/bluehood/bluehood.db` (SQLite).
 Override location with environment variables:
 - `BLUEHOOD_DATA_DIR` - Directory for data files
 - `BLUEHOOD_DB_PATH` - Direct path to database file
+
+> **Note**: Heartbeat and pruning settings can be configured from the web UI (Settings > Operations) or via environment variables. GUI values take priority over env vars.
 
 ## How It Works
 
@@ -426,6 +443,8 @@ Contributions welcome! Please open an issue or PR on GitHub.
 - [@jacobpretorius](https://github.com/jacobpretorius) (Jacob Pretorius) - CSV export JS fix (#14), click to open setting (#16)
 - [@unqualifiedkoala](https://github.com/unqualifiedkoala) - Documented BLE adapter requirements
 - [@dazzag24](https://github.com/dazzag24) - Reported macOS address format issue
+- [@floese](https://github.com/floese) (W.A.Flozart) - Firefox doubleclick fix (#29)
+- [@GeiserX](https://github.com/GeiserX) (Sergio Fernández) - Prometheus metrics exporter (#35), non-blocking vendor DB fix (#37), dual-adapter scanning (#33), robust scan recovery with rfkill (#40)
 
 ## License
 
