@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-dev \
     libdbus-1-dev \
     gosu \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user (but we'll need bluetooth group access)

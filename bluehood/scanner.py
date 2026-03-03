@@ -418,12 +418,15 @@ class BluetoothScanner:
             logger.error(f"USB reset failed for {adapter}: {e}")
             return False
 
-    def _recover_adapter(self, adapter: str, error_type: str) -> bool:
+    async def _recover_adapter(self, adapter: str, error_type: str) -> bool:
         """Attempt to recover a failed Bluetooth adapter.
 
         Chooses the right recovery strategy based on adapter type:
         - USB adapters: unbind/bind cycle (for NotReady/DOWN errors)
         - UART/internal adapters: rfkill toggle (for soft-block errors)
+
+        Blocking I/O (sysfs writes, sleeps for hardware timing) runs in
+        a thread to avoid freezing the asyncio event loop and web server.
 
         Returns True if recovery succeeded without needing a process exit.
         """
@@ -451,14 +454,14 @@ class BluetoothScanner:
                 f"BLE adapter {adapter} error ({error_type}), "
                 f"attempting USB reset (attempt {self._usb_reset_count}/{_MAX_USB_RESETS})"
             )
-            return self._usb_reset_adapter(adapter)
+            return await asyncio.to_thread(self._usb_reset_adapter, adapter)
 
         # Fall back to rfkill for non-USB adapters
         logger.warning(
             f"BLE adapter {adapter} error ({error_type}), "
             f"attempting rfkill toggle"
         )
-        return self._rfkill_toggle()
+        return await asyncio.to_thread(self._rfkill_toggle)
 
     def _rfkill_toggle(self) -> bool:
         """Toggle Bluetooth via sysfs rfkill (no binary/fork needed).
@@ -479,7 +482,7 @@ class BluetoothScanner:
             logger.error(f"sysfs rfkill toggle failed: {e}")
             return False
 
-    def _recover_and_exit(self) -> None:
+    async def _recover_and_exit(self) -> None:
         """Reset Bluetooth adapter and exit for a clean restart.
 
         First attempts in-process recovery (USB reset for USB adapters,
@@ -489,11 +492,14 @@ class BluetoothScanner:
 
         Crash-loop prevention: if uptime < 3 min, the previous restart
         didn't help — sleep 5 min instead of exiting again.
+
+        All blocking I/O and sleeps use asyncio.to_thread / asyncio.sleep
+        so the event loop (and web server) stays responsive during recovery.
         """
         adapter = self.adapter or "hci0"
 
         # Try in-process recovery first (USB reset or rfkill)
-        if self._recover_adapter(adapter, "InProgress"):
+        if await self._recover_adapter(adapter, "InProgress"):
             logger.info("Adapter recovered in-process, continuing scan loop")
             self._ble_stuck = False
             return
@@ -507,14 +513,14 @@ class BluetoothScanner:
                 f"Sleeping {_BACKOFF_SLEEP}s before retrying."
             )
             self._ble_stuck = False
-            time.sleep(_BACKOFF_SLEEP)
+            await asyncio.sleep(_BACKOFF_SLEEP)
             return
 
         logger.critical(
             "BLE adapter stuck (InProgress) and in-process recovery failed. "
             "Toggling rfkill and exiting for fresh D-Bus connections."
         )
-        self._rfkill_toggle()
+        await asyncio.to_thread(self._rfkill_toggle)
         os._exit(0)
 
     async def scan_ble(self, duration: float = SCAN_DURATION) -> list[ScannedDevice]:
@@ -522,7 +528,7 @@ class BluetoothScanner:
         devices: list[ScannedDevice] = []
 
         if self._ble_stuck:
-            self._recover_and_exit()
+            await self._recover_and_exit()
 
         try:
             kwargs = {
@@ -570,7 +576,7 @@ class BluetoothScanner:
                 # for the next scan cycle to trigger _recover_and_exit.
                 adapter = self.adapter or "hci0"
                 logger.warning(f"Adapter {adapter} not ready — attempting recovery")
-                if self._recover_adapter(adapter, "NotReady"):
+                if await self._recover_adapter(adapter, "NotReady"):
                     logger.info("Adapter recovered, will retry on next scan cycle")
                 else:
                     # Recovery failed — mark as stuck so next cycle exits

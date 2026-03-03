@@ -2777,6 +2777,8 @@ class WebServer:
         self.app.router.add_post("/api/auth/logout", self.api_logout)
         self.app.router.add_get("/api/auth/status", self.api_auth_status)
         self.app.router.add_post("/api/auth/setup", self.api_auth_setup)
+        # Health check (unauthenticated — used by Docker healthcheck)
+        self.app.router.add_get("/api/health", self.api_health)
 
     def _create_session(self) -> str:
         """Create a new session token."""
@@ -3366,6 +3368,14 @@ class WebServer:
 
         except Exception as e:
             return web.json_response({"error": str(e)}, status=400)
+
+    async def api_health(self, request: web.Request) -> web.Response:
+        """Health check endpoint for Docker/orchestrator probes.
+
+        Deliberately lightweight — no DB queries, no auth required.
+        If this responds, the event loop and web server are alive.
+        """
+        return web.json_response({"status": "ok"})
 
     async def start(self) -> web.AppRunner:
         """Start the web server."""
