@@ -5,13 +5,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bluez \
     libglib2.0-dev \
     libdbus-1-dev \
-    gosu \
     curl \
     && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user (but we'll need bluetooth group access)
-RUN useradd -m -s /bin/bash bluehood && \
-    usermod -aG bluetooth bluehood
 
 WORKDIR /app
 
@@ -23,12 +18,11 @@ COPY README.md .
 RUN pip install --no-cache-dir -e ".[metrics]"
 
 # Create data directory for database and cache
-RUN mkdir -p /data && chown bluehood:bluehood /data
+RUN mkdir -p /data
 
 # Bundle MAC vendor database at build time as fallback
 RUN python -c "from mac_vendor_lookup import MacLookup; MacLookup().update_vendors()" \
     && cp /root/.cache/mac-vendors.txt /data/mac-vendors.txt \
-    && chown bluehood:bluehood /data/mac-vendors.txt \
     || echo "Warning: could not bundle vendor DB"
 
 # Environment variables
@@ -39,7 +33,7 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 EXPOSE 9199
 
-# Entrypoint handles PUID/PGID user switching
+# Entrypoint handles PUID/PGID data directory ownership
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
