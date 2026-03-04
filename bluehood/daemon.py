@@ -47,6 +47,8 @@ class BluehoodDaemon:
     async def start(self) -> None:
         """Start the daemon."""
         logger.info("Starting bluehood daemon...")
+        if self.scanner._adapter_mac:
+            logger.info(f"Adapter MAC {self.scanner._adapter_mac} resolved to {self.scanner.adapter}")
         if self.scanner._use_dual_adapter:
             logger.info(f"Dual-adapter mode: BLE on {self.scanner.adapter}, classic on {self.scanner.classic_adapter}")
         else:
@@ -70,7 +72,7 @@ class BluehoodDaemon:
 
         # Start web server if port specified
         if self._web_port:
-            self._web_server = WebServer(port=self._web_port, notifications=self._notifications)
+            self._web_server = WebServer(port=self._web_port, notifications=self._notifications, scanner=self.scanner)
             await self._web_server.start()
             logger.info(f"Web dashboard available at http://0.0.0.0:{self._web_port}")
 

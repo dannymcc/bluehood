@@ -7,6 +7,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
 
 import aiohttp
@@ -24,7 +25,11 @@ except ImportError:
 MACVENDORS_API_URL = "https://api.macvendors.com/"
 
 from .classifier import is_macos_uuid
-from .config import SCAN_DURATION, BLUETOOTH_ADAPTER, CLASSIC_BLUETOOTH_ADAPTER, DATA_DIR
+from .config import (
+    SCAN_DURATION, BLUETOOTH_ADAPTER, CLASSIC_BLUETOOTH_ADAPTER,
+    BLUETOOTH_ADAPTER_MAC, CLASSIC_BLUETOOTH_ADAPTER_MAC,
+    STALE_SCAN_THRESHOLD, HEALTH_MAX_SCAN_AGE, DATA_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,28 +115,50 @@ def parse_device_class(device_class: int) -> tuple[str, Optional[str]]:
 
 
 def list_adapters() -> list[BluetoothAdapter]:
-    """List available Bluetooth adapters."""
+    """List available Bluetooth adapters via sysfs.
+
+    Reads /sys/class/bluetooth/hciX/address for each adapter.
+    Falls back to bluetoothctl if sysfs is not available.
+    """
     adapters = []
+    bt_class = Path("/sys/class/bluetooth")
+
+    if bt_class.is_dir():
+        for entry in sorted(bt_class.iterdir()):
+            if not entry.name.startswith("hci"):
+                continue
+            hci_name = entry.name
+            address = ""
+            addr_file = entry / "address"
+            if addr_file.is_file():
+                try:
+                    address = addr_file.read_text().strip()
+                except OSError:
+                    pass
+            adapters.append(BluetoothAdapter(
+                name=hci_name,
+                address=address,
+                alias=hci_name,
+            ))
+        if adapters:
+            return adapters
+
+    # Fallback: bluetoothctl (when sysfs is unavailable)
     try:
-        # Use bluetoothctl to list adapters
         result = subprocess.run(
             ["bluetoothctl", "list"],
             capture_output=True,
             text=True,
             timeout=5
         )
-        idx = 0
         for line in result.stdout.strip().split("\n"):
             if line.startswith("Controller"):
                 parts = line.split()
                 if len(parts) >= 3:
                     address = parts[1]
                     alias = " ".join(parts[2:])
-                    # Assume hci naming convention
-                    hci_name = f"hci{idx}"
-                    idx += 1
                     adapters.append(BluetoothAdapter(
-                        name=hci_name,
+                        name="",  # cannot reliably infer hci name
                         address=address,
                         alias=alias
                     ))
@@ -142,6 +169,95 @@ def list_adapters() -> list[BluetoothAdapter]:
     return adapters
 
 
+def resolve_adapter_by_mac(mac: str) -> Optional[str]:
+    """Find the hciX name for a Bluetooth adapter with the given MAC address.
+
+    Args:
+        mac: Bluetooth MAC address (e.g., "AA:BB:CC:DD:EE:FF"), case-insensitive.
+
+    Returns:
+        The hci name (e.g., "hci2") or None if no adapter matches.
+    """
+    mac_upper = mac.upper()
+    for adapter in list_adapters():
+        if adapter.address.upper() == mac_upper:
+            logger.info(f"Resolved adapter MAC {mac} -> {adapter.name}")
+            return adapter.name
+    return None
+
+
+def find_any_bluetooth_adapter() -> Optional[str]:
+    """Find any available Bluetooth adapter as a last resort.
+
+    Returns the hci name of the first adapter found, or None.
+    """
+    adapters = list_adapters()
+    if adapters and adapters[0].name:
+        logger.warning(f"Failover: using first available adapter {adapters[0].name}")
+        return adapters[0].name
+    return None
+
+
+def find_rfkill_for_adapter(adapter: str) -> Optional[str]:
+    """Find the rfkill sysfs state path for a given Bluetooth adapter.
+
+    Walks /sys/class/rfkill/rfkillN/ entries and matches by device symlink
+    or falls back to first bluetooth-type rfkill.
+
+    Args:
+        adapter: hci name like "hci0".
+
+    Returns:
+        Path like "/sys/class/rfkill/rfkill2/state", or None.
+    """
+    rfkill_base = Path("/sys/class/rfkill")
+    if not rfkill_base.is_dir():
+        return None
+
+    # Get the real device path for our adapter
+    try:
+        adapter_device = os.path.realpath(f"/sys/class/bluetooth/{adapter}/device")
+    except OSError:
+        adapter_device = None
+
+    bluetooth_rfkills = []
+
+    for entry in sorted(rfkill_base.iterdir()):
+        if not entry.name.startswith("rfkill"):
+            continue
+
+        type_file = entry / "type"
+        if not type_file.is_file():
+            continue
+
+        try:
+            rfkill_type = type_file.read_text().strip()
+        except OSError:
+            continue
+
+        if rfkill_type != "bluetooth":
+            continue
+
+        state_path = str(entry / "state")
+
+        # Check if this rfkill's device matches our adapter's device
+        if adapter_device:
+            try:
+                rfkill_device = os.path.realpath(str(entry / "device"))
+                if rfkill_device == adapter_device:
+                    return state_path
+            except OSError:
+                pass
+
+        bluetooth_rfkills.append(state_path)
+
+    # Fallback: return first bluetooth rfkill
+    if bluetooth_rfkills:
+        return bluetooth_rfkills[0]
+
+    return None
+
+
 VENDOR_DB_MAX_AGE_DAYS = 7
 VENDOR_DB_UPDATE_TIMEOUT = 30
 
@@ -149,7 +265,7 @@ _PROCESS_START = time.monotonic()
 _MIN_UPTIME_FOR_EXIT = 180  # 3 min — prevents crash loops after failed recovery
 _BACKOFF_SLEEP = 300  # 5 min sleep if restart didn't help
 
-RFKILL_SYSFS = "/sys/class/rfkill/rfkill0/state"
+_RFKILL_FALLBACK = "/sys/class/rfkill/rfkill0/state"
 
 # Maximum consecutive USB resets before giving up and exiting
 _MAX_USB_RESETS = 3
@@ -163,9 +279,23 @@ class BluetoothScanner:
         self,
         adapter: Optional[str] = None,
         classic_adapter: Optional[str] = None,
+        adapter_mac: Optional[str] = None,
+        classic_adapter_mac: Optional[str] = None,
     ):
-        self.adapter = adapter or BLUETOOTH_ADAPTER
-        self.classic_adapter = classic_adapter or CLASSIC_BLUETOOTH_ADAPTER or self.adapter
+        # Store MAC identifiers for re-resolution after recovery
+        self._adapter_mac = adapter_mac or BLUETOOTH_ADAPTER_MAC
+        self._classic_adapter_mac = classic_adapter_mac or CLASSIC_BLUETOOTH_ADAPTER_MAC
+
+        # Resolve adapter: MAC takes precedence over hci name
+        self.adapter = self._resolve_adapter(
+            adapter or BLUETOOTH_ADAPTER,
+            self._adapter_mac,
+        )
+        self.classic_adapter = self._resolve_adapter(
+            classic_adapter or CLASSIC_BLUETOOTH_ADAPTER,
+            self._classic_adapter_mac,
+        ) or self.adapter
+
         self._use_dual_adapter = (
             self.classic_adapter is not None
             and self.adapter is not None
@@ -179,6 +309,103 @@ class BluetoothScanner:
         self._usb_reset_count = 0
         self._last_usb_reset = 0.0
         self._adapter_usb_path: Optional[str] = None  # cached sysfs USB path
+
+        # Stale scan detection
+        self._consecutive_empty_scans = 0
+        self._last_successful_scan_time: Optional[float] = None
+        self._last_scan_device_count = 0
+
+        # Dynamic rfkill path (resolved lazily, invalidated on recovery)
+        self._rfkill_path: Optional[str] = None
+
+    def _resolve_adapter(
+        self,
+        hci_name: Optional[str],
+        mac: Optional[str],
+    ) -> Optional[str]:
+        """Resolve an adapter, preferring MAC-based lookup over hci name.
+
+        Resolution order:
+        1. If MAC is set, find the hci name matching that MAC.
+        2. If MAC lookup fails, try the hci name (if provided and exists in sysfs).
+        3. If hci name doesn't exist, try find_any_bluetooth_adapter().
+        4. Return None if nothing works (bleak will auto-select).
+        """
+        # Strategy 1: MAC-based resolution
+        if mac:
+            resolved = resolve_adapter_by_mac(mac)
+            if resolved:
+                return resolved
+            logger.warning(f"Adapter MAC {mac} not found among available adapters")
+
+        # Strategy 2: Check if the hci name is still valid
+        if hci_name:
+            if Path(f"/sys/class/bluetooth/{hci_name}").exists():
+                return hci_name
+            logger.warning(f"Adapter {hci_name} not found in sysfs")
+
+        # Strategy 3: Failover to any available adapter
+        fallback = find_any_bluetooth_adapter()
+        if fallback:
+            return fallback
+
+        # Strategy 4: Return None and let bleak auto-select
+        logger.warning("No Bluetooth adapter found, relying on bleak auto-selection")
+        return None
+
+    def _re_resolve_adapter(self) -> bool:
+        """Re-resolve the BLE adapter after a crash/renumbering event.
+
+        Invalidates cached USB path and rfkill path since hci index may
+        have changed. Returns True if an adapter was found.
+        """
+        self._adapter_usb_path = None
+        self._rfkill_path = None
+
+        old_adapter = self.adapter
+        self.adapter = self._resolve_adapter(old_adapter, self._adapter_mac)
+
+        if self.adapter and self.adapter != old_adapter:
+            logger.info(f"Adapter re-resolved: {old_adapter} -> {self.adapter}")
+
+        # Also re-resolve classic adapter
+        if self._classic_adapter_mac or self.classic_adapter:
+            old_classic = self.classic_adapter
+            self.classic_adapter = self._resolve_adapter(
+                old_classic,
+                self._classic_adapter_mac,
+            ) or self.adapter
+            if self.classic_adapter != old_classic:
+                logger.info(f"Classic adapter re-resolved: {old_classic} -> {self.classic_adapter}")
+            self._use_dual_adapter = (
+                self.classic_adapter is not None
+                and self.adapter is not None
+                and self.classic_adapter != self.adapter
+            )
+
+        return self.adapter is not None
+
+    def get_scan_health(self) -> dict:
+        """Return scan health status for the /api/health endpoint."""
+        now = time.monotonic()
+        scan_age = None
+        if self._last_successful_scan_time is not None:
+            scan_age = now - self._last_successful_scan_time
+
+        healthy = (
+            not self._ble_stuck
+            and (scan_age is None or scan_age < HEALTH_MAX_SCAN_AGE)
+        )
+
+        return {
+            "healthy": healthy,
+            "adapter": self.adapter,
+            "adapter_mac": self._adapter_mac,
+            "last_successful_scan_age": round(scan_age, 1) if scan_age is not None else None,
+            "consecutive_empty_scans": self._consecutive_empty_scans,
+            "ble_stuck": self._ble_stuck,
+            "last_scan_devices": self._last_scan_device_count,
+        }
 
     def _is_vendor_db_fresh(self) -> bool:
         """Check if the cached vendor DB exists and is less than 7 days old."""
@@ -321,8 +548,8 @@ class BluetoothScanner:
     def _find_usb_device_path(self, adapter: str) -> Optional[str]:
         """Find the sysfs USB device path for a given HCI adapter.
 
-        Maps e.g. 'hci1' → '1-1.5' by reading the symlink at
-        /sys/class/bluetooth/hci1/device → ../../usb1/1-1/1-1.5/1-1.5:1.0
+        Maps e.g. 'hci1' -> '1-1.5' by reading the symlink at
+        /sys/class/bluetooth/hci1/device -> ../../usb1/1-1/1-1.5/1-1.5:1.0
         and extracting the USB device portion.
 
         Returns None for non-USB adapters (e.g. UART/SDIO).
@@ -336,7 +563,7 @@ class BluetoothScanner:
             # We want the parent: 1-1.5
             base = os.path.basename(device_link)
             if ":" in base:
-                # Strip interface suffix (e.g. "1-1.5:1.0" → "1-1.5")
+                # Strip interface suffix (e.g. "1-1.5:1.0" -> "1-1.5")
                 usb_path = base.split(":")[0]
                 # Verify it's actually a USB device by checking the driver path
                 driver_path = f"/sys/bus/usb/drivers/usb/{usb_path}"
@@ -425,8 +652,8 @@ class BluetoothScanner:
         - USB adapters: unbind/bind cycle (for NotReady/DOWN errors)
         - UART/internal adapters: rfkill toggle (for soft-block errors)
 
-        Blocking I/O (sysfs writes, sleeps for hardware timing) runs in
-        a thread to avoid freezing the asyncio event loop and web server.
+        After recovery, re-resolves the adapter name in case the kernel
+        renumbered hciX indices during USB rebind.
 
         Returns True if recovery succeeded without needing a process exit.
         """
@@ -454,14 +681,22 @@ class BluetoothScanner:
                 f"BLE adapter {adapter} error ({error_type}), "
                 f"attempting USB reset (attempt {self._usb_reset_count}/{_MAX_USB_RESETS})"
             )
-            return await asyncio.to_thread(self._usb_reset_adapter, adapter)
+            success = await asyncio.to_thread(self._usb_reset_adapter, adapter)
+        else:
+            # Fall back to rfkill for non-USB adapters
+            logger.warning(
+                f"BLE adapter {adapter} error ({error_type}), "
+                f"attempting rfkill toggle"
+            )
+            success = await asyncio.to_thread(self._rfkill_toggle)
 
-        # Fall back to rfkill for non-USB adapters
-        logger.warning(
-            f"BLE adapter {adapter} error ({error_type}), "
-            f"attempting rfkill toggle"
-        )
-        return await asyncio.to_thread(self._rfkill_toggle)
+        # After any recovery attempt, re-resolve the adapter name.
+        # The kernel may have renumbered hciX after USB unbind/rebind.
+        if success or self._adapter_mac:
+            await asyncio.sleep(2)  # wait for kernel enumeration
+            self._re_resolve_adapter()
+
+        return success
 
     def _rfkill_toggle(self) -> bool:
         """Toggle Bluetooth via sysfs rfkill (no binary/fork needed).
@@ -469,17 +704,29 @@ class BluetoothScanner:
         Writing to sysfs is a simple file write — works even when FDs
         are nearly exhausted, unlike subprocess.run which needs to fork.
         """
+        # Resolve rfkill path dynamically
+        adapter = self.adapter or "hci0"
+        rfkill_path = self._rfkill_path
+        if not rfkill_path:
+            rfkill_path = find_rfkill_for_adapter(adapter)
+            if rfkill_path:
+                self._rfkill_path = rfkill_path
+            else:
+                rfkill_path = _RFKILL_FALLBACK
+                logger.warning(f"Could not find rfkill for {adapter}, using fallback {rfkill_path}")
+
         try:
-            with open(RFKILL_SYSFS, "w") as f:
+            logger.info(f"Toggling rfkill via {rfkill_path}")
+            with open(rfkill_path, "w") as f:
                 f.write("1")  # soft-block
             time.sleep(2)
-            with open(RFKILL_SYSFS, "w") as f:
+            with open(rfkill_path, "w") as f:
                 f.write("0")  # unblock
             time.sleep(3)
             logger.info("Bluetooth adapter reset via sysfs rfkill")
             return True
         except Exception as e:
-            logger.error(f"sysfs rfkill toggle failed: {e}")
+            logger.error(f"sysfs rfkill toggle failed ({rfkill_path}): {e}")
             return False
 
     async def _recover_and_exit(self) -> None:
@@ -502,6 +749,7 @@ class BluetoothScanner:
         if await self._recover_adapter(adapter, "InProgress"):
             logger.info("Adapter recovered in-process, continuing scan loop")
             self._ble_stuck = False
+            self._consecutive_empty_scans = 0
             return
 
         # In-process recovery failed — fall back to exit
@@ -513,11 +761,14 @@ class BluetoothScanner:
                 f"Sleeping {_BACKOFF_SLEEP}s before retrying."
             )
             self._ble_stuck = False
+            self._consecutive_empty_scans = 0
             await asyncio.sleep(_BACKOFF_SLEEP)
+            # After long sleep, adapter might have recovered — re-resolve
+            self._re_resolve_adapter()
             return
 
         logger.critical(
-            "BLE adapter stuck (InProgress) and in-process recovery failed. "
+            "BLE adapter stuck and in-process recovery failed. "
             "Toggling rfkill and exiting for fresh D-Bus connections."
         )
         await asyncio.to_thread(self._rfkill_toggle)
@@ -565,21 +816,47 @@ class BluetoothScanner:
 
         except asyncio.TimeoutError:
             logger.warning("BLE scan timed out (adapter may be busy)")
+            adapter = self.adapter or "hci0"
+            logger.warning(f"Adapter {adapter} timed out — attempting recovery")
+            if not await self._recover_adapter(adapter, "Timeout"):
+                self._ble_stuck = True
+
         except Exception as e:
             error_str = str(e)
             logger.error(f"BLE scan error: {e}")
+
             if "InProgress" in error_str:
                 self._ble_stuck = True
-            elif "NotReady" in error_str or "Resource Not Ready" in error_str:
-                # Adapter went DOWN (common with USB dongles on SBCs).
-                # Attempt immediate in-process recovery instead of waiting
-                # for the next scan cycle to trigger _recover_and_exit.
+            else:
+                # ALL other exceptions trigger recovery (adapter gone, D-Bus
+                # failures, NotReady, etc.) — not just specific error strings.
                 adapter = self.adapter or "hci0"
-                logger.warning(f"Adapter {adapter} not ready — attempting recovery")
-                if await self._recover_adapter(adapter, "NotReady"):
-                    logger.info("Adapter recovered, will retry on next scan cycle")
+                logger.warning(f"Adapter {adapter} error — attempting recovery")
+                if not await self._recover_adapter(adapter, error_str[:50]):
+                    self._ble_stuck = True
+
+        # Stale scan detection: if 0 devices for too many consecutive scans,
+        # the adapter may have silently died without raising an error.
+        if devices:
+            self._consecutive_empty_scans = 0
+            self._last_successful_scan_time = time.monotonic()
+            self._last_scan_device_count = len(devices)
+        else:
+            self._consecutive_empty_scans += 1
+            self._last_scan_device_count = 0
+            if (
+                STALE_SCAN_THRESHOLD > 0
+                and self._consecutive_empty_scans >= STALE_SCAN_THRESHOLD
+                and not self._ble_stuck
+            ):
+                logger.warning(
+                    f"Stale scan: {self._consecutive_empty_scans} consecutive scans "
+                    f"with 0 BLE devices — triggering recovery"
+                )
+                adapter = self.adapter or "hci0"
+                if await self._recover_adapter(adapter, "StaleScan"):
+                    self._consecutive_empty_scans = 0
                 else:
-                    # Recovery failed — mark as stuck so next cycle exits
                     self._ble_stuck = True
 
         return devices

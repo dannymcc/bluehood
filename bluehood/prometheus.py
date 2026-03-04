@@ -73,6 +73,10 @@ class MetricsExporter:
             "bluehood_devices_ignored",
             "Number of ignored devices",
         )
+        self.adapter_healthy = Gauge(
+            "bluehood_adapter_healthy",
+            "Whether the BLE adapter is functional (1=healthy, 0=degraded)",
+        )
 
         # -- Histograms --
         self.scan_duration = Histogram(
@@ -102,6 +106,7 @@ class MetricsExporter:
         """Called by the daemon after each scan cycle."""
         self.scans_total.inc()
         self.scan_duration.observe(duration_seconds)
+        self.adapter_healthy.set(1)
 
         total = ble_count + classic_count
         self.last_scan_devices.labels(scan_type="ble").set(ble_count)
@@ -118,6 +123,10 @@ class MetricsExporter:
     def on_scan_error(self, scan_type: str) -> None:
         """Record a scan error."""
         self.scan_errors_total.labels(scan_type=scan_type).inc()
+
+    def on_adapter_degraded(self) -> None:
+        """Mark adapter as degraded."""
+        self.adapter_healthy.set(0)
 
     async def update_db_metrics(self) -> None:
         """Query the database for aggregate device counts."""

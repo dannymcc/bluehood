@@ -2738,11 +2738,12 @@ def verify_password(password: str, stored_hash: str) -> bool:
 class WebServer:
     """Web server for Bluehood dashboard."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8080, notifications=None):
+    def __init__(self, host: str = "0.0.0.0", port: int = 8080, notifications=None, scanner=None):
         self.host = host
         self.port = port
         self.app = web.Application()
         self._notifications = notifications
+        self._scanner = scanner
         self._sessions: dict[str, datetime] = {}  # session_token -> expiry
         self._session_duration = timedelta(hours=24)
         self._setup_routes()
@@ -3372,10 +3373,31 @@ class WebServer:
     async def api_health(self, request: web.Request) -> web.Response:
         """Health check endpoint for Docker/orchestrator probes.
 
-        Deliberately lightweight — no DB queries, no auth required.
-        If this responds, the event loop and web server are alive.
+        Returns 200 if scanning is functional, 503 if degraded.
+        When no scanner is attached, always returns 200 (web-only mode).
         """
-        return web.json_response({"status": "ok"})
+        if self._scanner is None:
+            return web.json_response({"status": "ok"})
+
+        health = self._scanner.get_scan_health()
+
+        if health["healthy"]:
+            return web.json_response({
+                "status": "ok",
+                "adapter": health["adapter"],
+                "last_scan_devices": health["last_scan_devices"],
+            })
+        else:
+            return web.json_response(
+                {
+                    "status": "degraded",
+                    "adapter": health["adapter"],
+                    "ble_stuck": health["ble_stuck"],
+                    "consecutive_empty_scans": health["consecutive_empty_scans"],
+                    "last_successful_scan_age": health["last_successful_scan_age"],
+                },
+                status=503,
+            )
 
     async def start(self) -> web.AppRunner:
         """Start the web server."""
