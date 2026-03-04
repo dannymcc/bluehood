@@ -114,11 +114,30 @@ def parse_device_class(device_class: int) -> tuple[str, Optional[str]]:
     return major_type, minor_type
 
 
-def list_adapters() -> list[BluetoothAdapter]:
-    """List available Bluetooth adapters via sysfs.
+def _get_adapter_address_hciconfig(hci_name: str) -> str:
+    """Get the Bluetooth MAC address for an adapter via hciconfig.
 
-    Reads /sys/class/bluetooth/hciX/address for each adapter.
-    Falls back to bluetoothctl if sysfs is not available.
+    Fallback for kernels that don't expose /sys/class/bluetooth/hciX/address.
+    """
+    try:
+        result = subprocess.run(
+            ["hciconfig", hci_name],
+            capture_output=True, text=True, timeout=5,
+        )
+        match = re.search(r'BD Address:\s+([0-9A-Fa-f:]{17})', result.stdout)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return ""
+
+
+def list_adapters() -> list[BluetoothAdapter]:
+    """List available Bluetooth adapters.
+
+    Uses sysfs to enumerate hci devices (reliable naming), then reads
+    MAC addresses from sysfs or falls back to hciconfig.
+    Falls back to bluetoothctl if sysfs enumeration is not available.
     """
     adapters = []
     bt_class = Path("/sys/class/bluetooth")
@@ -129,12 +148,16 @@ def list_adapters() -> list[BluetoothAdapter]:
                 continue
             hci_name = entry.name
             address = ""
+            # Try sysfs address file first (not all kernels expose it)
             addr_file = entry / "address"
             if addr_file.is_file():
                 try:
                     address = addr_file.read_text().strip()
                 except OSError:
                     pass
+            # Fall back to hciconfig for the MAC address
+            if not address:
+                address = _get_adapter_address_hciconfig(hci_name)
             adapters.append(BluetoothAdapter(
                 name=hci_name,
                 address=address,
