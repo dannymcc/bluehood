@@ -5,7 +5,6 @@ import logging
 import math
 import secrets
 from datetime import datetime, timedelta
-from typing import Optional
 
 from aiohttp import web
 
@@ -15,6 +14,18 @@ from ..patterns import generate_hourly_heatmap, generate_daily_heatmap
 from .templates import ABOUT_TEMPLATE, HTML_TEMPLATE, LOGIN_TEMPLATE, SETTINGS_TEMPLATE
 
 logger = logging.getLogger(__name__)
+
+# Routes reachable without a valid session when auth is enabled. Everything
+# else is gated by _auth_middleware. /api/auth/setup is allowed through so the
+# initial-setup flow works; the handler itself enforces that credentials can
+# only be *changed* by an already-authenticated user.
+PUBLIC_PATHS = frozenset({
+    "/login",
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/status",
+    "/api/auth/setup",
+})
 
 # Import for type hints (will be None at runtime if not used)
 try:
@@ -44,7 +55,7 @@ class WebServer:
     def __init__(self, host: str = "0.0.0.0", port: int = 8080, notifications=None):
         self.host = host
         self.port = port
-        self.app = web.Application()
+        self.app = web.Application(middlewares=[self._auth_middleware])
         self._notifications = notifications
         self._sessions: dict[str, datetime] = {}  # session_token -> expiry
         self._session_duration = timedelta(hours=24)
@@ -105,17 +116,19 @@ class WebServer:
         token = request.cookies.get("session")
         return self._validate_session(token)
 
-    async def _require_auth(self, request: web.Request) -> Optional[web.Response]:
-        """Return a redirect response if auth is required but not present."""
+    @web.middleware
+    async def _auth_middleware(self, request: web.Request, handler):
+        """Default-deny: every route requires a valid session unless listed in PUBLIC_PATHS."""
+        if request.path in PUBLIC_PATHS:
+            return await handler(request)
         if not await self._check_auth(request):
             if request.path.startswith("/api/"):
                 return web.json_response({"error": "Unauthorized"}, status=401)
             raise web.HTTPFound("/login")
-        return None
+        return await handler(request)
 
     async def index(self, request: web.Request) -> web.Response:
         """Serve the main dashboard."""
-        await self._require_auth(request)
         return web.Response(text=HTML_TEMPLATE, content_type="text/html")
 
     async def login_page(self, request: web.Request) -> web.Response:
@@ -129,12 +142,10 @@ class WebServer:
 
     async def settings_page(self, request: web.Request) -> web.Response:
         """Serve the settings page."""
-        await self._require_auth(request)
         return web.Response(text=SETTINGS_TEMPLATE, content_type="text/html")
 
     async def about_page(self, request: web.Request) -> web.Response:
         """Serve the about page."""
-        await self._require_auth(request)
         return web.Response(text=ABOUT_TEMPLATE, content_type="text/html")
 
     async def api_devices(self, request: web.Request) -> web.Response:
