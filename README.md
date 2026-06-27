@@ -73,7 +73,8 @@ Bluehood is a Bluetooth scanner that:
 - **Hourly and daily activity heatmaps** showing when devices are active
 - **Pattern analysis** ("Weekdays, evenings 5PM-9PM")
 - **Dwell time analysis** showing total time devices spend in range
-- **Device correlation** detection to find devices that appear together
+- **Device correlation** detection to find devices that appear together (co-presence plus synchronized arrival/departure)
+- **MAC-rotation linkage** ("Likely same device") — heuristically links randomized identifiers that hand off in time, share a similar signal strength, and ping at a similar cadence
 - **Proximity zones** (immediate, near, far, remote) based on signal strength
 - Search by MAC, vendor, or name
 - Date range search for historical queries
@@ -87,14 +88,14 @@ Bluehood is a Bluetooth scanner that:
 
 ### Operations
 - **Heartbeat check-in** — periodically POST status to an uptime monitoring service (e.g., Uptime Kuma, Healthchecks.io)
-- **Storage rotation** — automatically prune sightings older than a configurable number of days
+- **Storage rotation** — automatically prune sightings older than a configurable number of days; optionally restrict pruning to whole stale devices seen fewer than a minimum number of times (watched devices are never pruned)
 - Both configurable from the web UI or via environment variables
 
 ### Web Interface
 - **Compact/Detailed view toggle** for different display preferences
 - **Screenshot mode** to obfuscate MACs and names for safe sharing
 - **Keyboard shortcuts** for power users (press `?` to view)
-- **CSV export** of device data
+- **CSV export** of detailed device data (MAC, vendor, identifier, type, BT type, device class, watched/ignored flags, first/last seen, sightings, group, service UUIDs, and notes) — exports the whole filtered set, not just the current page
 - **Device groups** for organizing related devices
 - **Optional authentication** to secure access
 
@@ -160,6 +161,7 @@ The web dashboard will be available at **http://localhost:8080**
 | `BLUEHOOD_HEARTBEAT_URL` | disabled | URL to POST heartbeat check-ins (e.g., a healthchecks.io or uptime-kuma push URL) |
 | `BLUEHOOD_HEARTBEAT_INTERVAL` | `300` | Seconds between heartbeat check-ins |
 | `BLUEHOOD_PRUNE_DAYS` | `0` (disabled) | Auto-delete sightings older than N days to free storage |
+| `BLUEHOOD_PRUNE_MIN_SIGHTINGS` | `0` (disabled) | When >0, prune whole stale devices (older than `BLUEHOOD_PRUNE_DAYS` and with fewer than N total sightings) instead of only trimming old sighting rows; watched devices are never pruned |
 
 ### Bluetooth Adapter Requirements
 
@@ -275,6 +277,7 @@ The dashboard provides:
   - Pattern analysis
   - Dwell time statistics
   - Correlated devices list
+  - Likely same device (MAC rotation) list
   - Proximity zone indicator
   - Operator notes field
   - Group assignment

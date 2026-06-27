@@ -1,6 +1,9 @@
 """Web server for the Bluehood dashboard."""
 
+import csv
 import hashlib
+import io
+import json
 import logging
 import math
 import secrets
@@ -67,6 +70,8 @@ class WebServer:
         self.app.router.add_get("/settings", self.settings_page)
         self.app.router.add_get("/about", self.about_page)
         self.app.router.add_get("/api/devices", self.api_devices)
+        self.app.router.add_get("/api/devices/export", self.api_export_devices)
+        self.app.router.add_post("/api/devices/export", self.api_export_devices)
         self.app.router.add_get("/api/device/{mac}", self.api_device)
         self.app.router.add_post("/api/device/{mac}/watch", self.api_toggle_watch)
         self.app.router.add_post("/api/device/{mac}/group", self.api_set_device_group)
@@ -74,8 +79,10 @@ class WebServer:
         self.app.router.add_get("/api/device/{mac}/rssi", self.api_device_rssi)
         self.app.router.add_get("/api/device/{mac}/dwell", self.api_device_dwell)
         self.app.router.add_get("/api/device/{mac}/correlation", self.api_device_correlation)
+        self.app.router.add_get("/api/device/{mac}/rotation", self.api_device_rotation)
         self.app.router.add_get("/api/device/{mac}/proximity", self.api_device_proximity)
         self.app.router.add_post("/api/device/{mac}/notes", self.api_set_device_notes)
+        self.app.router.add_get("/api/name-groups", self.api_name_groups)
         self.app.router.add_get("/api/search", self.api_search)
         self.app.router.add_get("/api/stats", self.api_stats)
         # Settings
@@ -238,6 +245,230 @@ class WebServer:
             "has_next": page < total_pages,
         })
 
+    async def api_export_devices(self, request: web.Request) -> web.Response:
+        """Stream a CSV export (one row per sighting) for the matching devices.
+
+        The CSV is generated and streamed server-side so the browser downloads
+        straight to disk. Building it client-side meant pulling every sighting
+        into one giant JSON response (hundreds of MB on a busy sensor) and then
+        concatenating an even larger string in the page — which simply never
+        finished. Sightings are read in MAC batches so memory stays bounded
+        regardless of history size.
+
+        Accepts either GET query params or POST form fields. ``macs`` (a
+        comma-separated allow-list) pins the export to a specific selection or
+        date-filtered set; ``screenshot=1`` mirrors the dashboard's privacy
+        obfuscation. POST is used for large selections that would overflow a URL.
+        """
+        if request.method == "POST":
+            params = await request.post()
+        else:
+            params = request.query
+
+        device_filter = params.get("filter", "all")
+        search = params.get("search") or None
+        sort_column = params.get("sort", "last_seen")
+        sort_direction = params.get("direction", "desc")
+        screenshot = str(params.get("screenshot", "")).lower() in ("1", "true", "yes")
+        macs_param = params.get("macs")
+        explicit_macs = (
+            [m for m in macs_param.split(",") if m] if macs_param else None
+        )
+
+        # Export everything that matches the query, including randomized-MAC and
+        # ignored devices that the dashboard hides by default.
+        devices = await db.get_devices_export(
+            include_ignored=True,
+            device_filter=device_filter,
+            search=search,
+            sort_column=sort_column,
+            sort_direction=sort_direction,
+            exclude_randomized=False,
+        )
+
+        # A selection or date filter scopes the export to specific MACs, kept in
+        # the order the client supplied them.
+        if explicit_macs is not None:
+            order = {m: i for i, m in enumerate(explicit_macs)}
+            wanted = set(explicit_macs)
+            devices = [d for d in devices if d.mac in wanted]
+            devices.sort(key=lambda d: order.get(d.mac, len(order)))
+
+        groups = await db.get_groups()
+        group_lookup = {g.id: g for g in groups}
+
+        export_format = "json" if str(params.get("format", "csv")).lower() == "json" else "csv"
+
+        def _obfuscate_mac(mac: str) -> str:
+            if not screenshot or not mac:
+                return mac
+            if is_macos_uuid(mac):
+                return mac[:8] + "-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+            parts = mac.split(":")
+            if len(parts) == 6:
+                return parts[0] + ":" + parts[1] + ":XX:XX:XX:XX"
+            return mac[:5] + ":XX:XX:XX:XX"
+
+        def _obfuscate_name(name: str) -> str:
+            if not screenshot or not name:
+                return name
+            if len(name) <= 2:
+                return "**"
+            return name[:2] + "*" * min(len(name) - 2, 8)
+
+        filename = (
+            "bluehood-recon-" + datetime.now().strftime("%Y-%m-%d") + "." + export_format
+        )
+        content_type = (
+            "application/json; charset=utf-8"
+            if export_format == "json"
+            else "text/csv; charset=utf-8"
+        )
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": content_type,
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+        await response.prepare(request)
+
+        if export_format == "json":
+            await self._stream_devices_json(
+                response, devices, group_lookup, _obfuscate_mac, _obfuscate_name
+            )
+        else:
+            await self._stream_devices_csv(
+                response, devices, group_lookup, _obfuscate_mac, _obfuscate_name
+            )
+
+        await response.write_eof()
+        return response
+
+    async def _stream_devices_csv(
+        self, response, devices, group_lookup, obfuscate_mac, obfuscate_name
+    ) -> None:
+        """Write the device export as CSV (one row per sighting) to the stream."""
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator="\n")
+
+        def _flush() -> bytes:
+            data = buffer.getvalue().encode("utf-8")
+            buffer.seek(0)
+            buffer.truncate(0)
+            return data
+
+        writer.writerow([
+            "MAC", "Vendor", "Identifier", "Type", "BT_Type", "Device_Class",
+            "Watched", "Ignored", "First_Seen", "Last_Seen", "Total_Sightings",
+            "Group", "Service_UUIDs", "UUID_Names", "Notes",
+            "Sighting_Time", "RSSI", "Proximity_Zone",
+        ])
+        await response.write(_flush())
+
+        # Walk the devices in MAC batches, pulling each batch's raw sightings as
+        # we go so the full history never has to live in memory at once.
+        chunk = 400
+        for start in range(0, len(devices), chunk):
+            subset = devices[start:start + chunk]
+            sightings = await db.get_sightings_for_export([d.mac for d in subset])
+            sightings_by_mac: dict[str, list[dict]] = {}
+            for s in sightings:
+                sightings_by_mac.setdefault(s["mac"], []).append(s)
+
+            for d in subset:
+                device_type = d.device_type or classify_device(
+                    d.vendor, d.friendly_name, d.service_uuids, d.device_class,
+                )
+                group = group_lookup.get(d.group_id) if d.group_id else None
+                uuids = "; ".join(d.service_uuids) if d.service_uuids else ""
+                uuid_names = "; ".join(get_uuid_names(d.service_uuids) or [])
+                base = [
+                    obfuscate_mac(d.mac),
+                    d.vendor or "",
+                    obfuscate_name(d.friendly_name) if d.friendly_name else "",
+                    get_type_label(device_type) or device_type or "",
+                    d.bt_type or "",
+                    d.device_class if d.device_class is not None else "",
+                    "Yes" if d.watched else "No",
+                    "Yes" if d.ignored else "No",
+                    (d.first_seen.isoformat() + "Z") if d.first_seen else "",
+                    (d.last_seen.isoformat() + "Z") if d.last_seen else "",
+                    d.total_sightings if d.total_sightings is not None else "",
+                    group.name if group else "",
+                    uuids,
+                    uuid_names,
+                    d.notes or "",
+                ]
+                device_sightings = sightings_by_mac.get(d.mac)
+                if not device_sightings:
+                    # Keep the device even if it has no stored sightings.
+                    writer.writerow(base + ["", "", ""])
+                    continue
+                for s in device_sightings:
+                    rssi = s.get("rssi")
+                    writer.writerow(base + [
+                        s.get("timestamp") or "",
+                        rssi if rssi is not None else "",
+                        db.rssi_to_proximity_zone(rssi),
+                    ])
+            await response.write(_flush())
+
+    async def _stream_devices_json(
+        self, response, devices, group_lookup, obfuscate_mac, obfuscate_name
+    ) -> None:
+        """Write the device export as a JSON array (sightings nested per device).
+
+        Streamed device-by-device behind a single top-level array so the whole
+        history never has to be assembled in memory, mirroring the CSV path.
+        """
+        await response.write(b"[")
+        first = True
+        chunk = 400
+        for start in range(0, len(devices), chunk):
+            subset = devices[start:start + chunk]
+            sightings = await db.get_sightings_for_export([d.mac for d in subset])
+            sightings_by_mac: dict[str, list[dict]] = {}
+            for s in sightings:
+                sightings_by_mac.setdefault(s["mac"], []).append(s)
+
+            for d in subset:
+                device_type = d.device_type or classify_device(
+                    d.vendor, d.friendly_name, d.service_uuids, d.device_class,
+                )
+                group = group_lookup.get(d.group_id) if d.group_id else None
+                record = {
+                    "mac": obfuscate_mac(d.mac),
+                    "vendor": d.vendor,
+                    "identifier": obfuscate_name(d.friendly_name) if d.friendly_name else None,
+                    "type": get_type_label(device_type) or device_type,
+                    "device_type": device_type,
+                    "bt_type": d.bt_type,
+                    "device_class": d.device_class,
+                    "watched": bool(d.watched),
+                    "ignored": bool(d.ignored),
+                    "first_seen": (d.first_seen.isoformat() + "Z") if d.first_seen else None,
+                    "last_seen": (d.last_seen.isoformat() + "Z") if d.last_seen else None,
+                    "total_sightings": d.total_sightings,
+                    "group": group.name if group else None,
+                    "service_uuids": d.service_uuids or [],
+                    "uuid_names": get_uuid_names(d.service_uuids) or [],
+                    "notes": d.notes or None,
+                    "sightings": [
+                        {
+                            "timestamp": s.get("timestamp"),
+                            "rssi": s.get("rssi"),
+                            "proximity_zone": db.rssi_to_proximity_zone(s.get("rssi")),
+                        }
+                        for s in sightings_by_mac.get(d.mac, [])
+                    ],
+                }
+                prefix = b"" if first else b","
+                first = False
+                await response.write(prefix + json.dumps(record).encode("utf-8"))
+
+        await response.write(b"]")
+
     async def api_device(self, request: web.Request) -> web.Response:
         """Get detailed info for a single device."""
         mac = request.match_info["mac"]
@@ -365,9 +596,23 @@ class WebServer:
         mac = request.match_info["mac"]
         days = int(request.query.get("days", "30"))
         window_minutes = int(request.query.get("window", "5"))
+        gap_minutes = int(request.query.get("gap", "15"))
+        edge_raw = request.query.get("edge")
+        edge_minutes = int(edge_raw) if edge_raw not in (None, "") else None
 
-        correlated = await db.get_correlated_devices(mac, days, window_minutes)
+        correlated = await db.get_correlated_devices(
+            mac, days, window_minutes, gap_minutes, edge_minutes
+        )
         return web.json_response({"mac": mac, "correlated_devices": correlated})
+
+    async def api_device_rotation(self, request: web.Request) -> web.Response:
+        """Find devices likely to be the same physical device (MAC rotation)."""
+        mac = request.match_info["mac"]
+        days = int(request.query.get("days", "7"))
+        tolerance = int(request.query.get("tolerance", "6"))
+
+        rotation = await db.get_rotation_candidates(mac, days, rssi_tolerance=tolerance)
+        return web.json_response({"mac": mac, **rotation})
 
     async def api_device_proximity(self, request: web.Request) -> web.Response:
         """Get proximity zone statistics for a device."""
@@ -443,6 +688,17 @@ class WebServer:
 
         return ", ".join(parts) if parts else "No clear pattern"
 
+    async def api_name_groups(self, request: web.Request) -> web.Response:
+        """List names shared by more than one MAC (MAC-randomization duplicates)."""
+        include_ignored = str(request.query.get("include_ignored", "")).lower() in ("1", "true", "yes")
+        groups = await db.get_name_groups(min_devices=2, include_ignored=include_ignored)
+        for g in groups:
+            device_type = g.get("device_type") or classify_device(g.get("vendor"), g.get("name"))
+            g["device_type"] = device_type
+            g["type_icon"] = get_type_icon(device_type)
+            g["type_label"] = get_type_label(device_type)
+        return web.json_response({"groups": groups, "total": len(groups)})
+
     async def api_search(self, request: web.Request) -> web.Response:
         """Search for devices seen within a datetime range."""
         start_str = request.query.get("start")
@@ -516,6 +772,7 @@ class WebServer:
             "heartbeat_url": settings.heartbeat_url or "",
             "heartbeat_interval": settings.heartbeat_interval,
             "prune_days": settings.prune_days,
+            "prune_min_sightings": settings.prune_min_sightings,
         })
 
     async def api_update_settings(self, request: web.Request) -> web.Response:
@@ -535,6 +792,7 @@ class WebServer:
                 heartbeat_url=heartbeat_url,
                 heartbeat_interval=int(data.get("heartbeat_interval", 300)),
                 prune_days=int(data.get("prune_days", 0)),
+                prune_min_sightings=int(data.get("prune_min_sightings", 0)),
             )
             await db.update_settings(settings)
 

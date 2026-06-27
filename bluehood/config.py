@@ -36,3 +36,7 @@ HEARTBEAT_INTERVAL = int(os.environ.get("BLUEHOOD_HEARTBEAT_INTERVAL", "300"))  
 
 # Auto-prune sightings older than N days (0 = disabled)
 PRUNE_DAYS = int(os.environ.get("BLUEHOOD_PRUNE_DAYS", "0"))
+
+# When pruning, only remove stale devices with fewer than this many total
+# sightings (0 = disabled; prune by age only, keeping device records).
+PRUNE_MIN_SIGHTINGS = int(os.environ.get("BLUEHOOD_PRUNE_MIN_SIGHTINGS", "0"))

@@ -926,16 +926,23 @@ HTML_TEMPLATE = """
                 <button class="filter-btn" id="click-to-open-toggle" onclick="toggleClickToOpen()" style="width: 100%; justify-content: center; margin-top: 0.5rem;">
                     👆 Click to Open
                 </button>
+                <button class="filter-btn" id="name-groups-toggle" onclick="toggleNameGroups()" style="width: 100%; justify-content: center; margin-top: 0.5rem;">
+                    🔗 Group by Name
+                </button>
             </div>
         </aside>
 
         <main class="content">
             <div class="search-bar">
                 <input type="text" class="search-input" id="search" placeholder="Search MAC, vendor, or identifier...">
-                <button class="btn" id="export-btn" onclick="exportData()">Export CSV</button>
+                <select class="form-input bulk-select" id="export-format" aria-label="Export format" style="min-width: 5rem;">
+                    <option value="csv" selected>CSV</option>
+                    <option value="json">JSON</option>
+                </select>
+                <button class="btn" id="export-btn" onclick="exportData()">Export</button>
             </div>
 
-            <div class="table-container">
+            <div class="table-container" id="devices-container">
                 <div class="table-header">
                     <span class="table-title">Identified Targets <span id="selected-count" class="selected-summary" style="display: none;">· 0 selected</span></span>
                     <div class="table-actions">
@@ -992,6 +999,18 @@ HTML_TEMPLATE = """
                             <option value="250">250</option>
                         </select>
                     </div>
+                </div>
+            </div>
+
+            <div class="table-container" id="name-groups-container" style="display: none;">
+                <div class="table-header">
+                    <span class="table-title">Devices Sharing a Name <span id="name-groups-count" class="selected-summary" style="display: none;"></span></span>
+                    <span style="font-size: 0.7rem; color: var(--text-muted);">
+                        Identical advertised name across multiple MACs — likely MAC randomization.
+                    </span>
+                </div>
+                <div id="name-groups-list" style="padding: 0.5rem 1rem 1rem;">
+                    <div style="text-align: center; padding: 2rem; color: var(--text-muted);">Loading...</div>
                 </div>
             </div>
         </main>
@@ -1159,6 +1178,67 @@ HTML_TEMPLATE = """
                 btn.style.background = clickToOpen ? 'var(--accent-blue)' : '';
                 btn.style.color = clickToOpen ? 'white' : '';
             }
+        }
+
+        let nameGroupsActive = false;
+
+        function toggleNameGroups() {
+            nameGroupsActive = !nameGroupsActive;
+            const devicesEl = document.getElementById('devices-container');
+            const groupsEl = document.getElementById('name-groups-container');
+            if (devicesEl) devicesEl.style.display = nameGroupsActive ? 'none' : '';
+            if (groupsEl) groupsEl.style.display = nameGroupsActive ? '' : 'none';
+            const btn = document.getElementById('name-groups-toggle');
+            if (btn) {
+                btn.innerHTML = nameGroupsActive ? '🔗 Group by Name ON' : '🔗 Group by Name';
+                btn.style.background = nameGroupsActive ? 'var(--accent-blue)' : '';
+                btn.style.color = nameGroupsActive ? 'white' : '';
+            }
+            if (nameGroupsActive) loadNameGroups();
+        }
+
+        async function loadNameGroups() {
+            const container = document.getElementById('name-groups-list');
+            const countEl = document.getElementById('name-groups-count');
+            if (!container) return;
+            container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-muted);">Loading...</div>';
+            try {
+                const response = await fetch('/api/name-groups');
+                const data = await response.json();
+                const groups = data.groups || [];
+                if (countEl) {
+                    countEl.style.display = '';
+                    countEl.textContent = '· ' + groups.length + ' name' + (groups.length === 1 ? '' : 's');
+                }
+                if (groups.length === 0) {
+                    container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-muted);">No names are shared across multiple addresses.</div>';
+                    return;
+                }
+                container.innerHTML = groups.map(renderNameGroup).join('');
+            } catch (error) {
+                container.innerHTML = '<div style="text-align: center; padding: 2rem; color: var(--text-muted);">Error loading name groups</div>';
+            }
+        }
+
+        function renderNameGroup(g) {
+            const name = obfuscateName(g.name) || '(unnamed)';
+            const { text: lastSeen, tooltip: lastSeenTooltip } = formatLastSeen(g.last_seen);
+            const vendor = g.vendor ? ' · ' + g.vendor : '';
+            const randomized = g.randomized_count > 0
+                ? '<span title="' + g.randomized_count + ' of ' + g.device_count + ' addresses are randomized" style="font-size: 0.65rem; color: var(--accent-amber); border: 1px solid var(--accent-amber); border-radius: 3px; padding: 0 0.3rem; margin-left: 0.5rem;">' + g.randomized_count + ' randomized</span>'
+                : '';
+            const members = (g.macs || []).map(mac => {
+                const shownMac = isMacOSUUID(mac) ? obfuscateMAC(mac).substring(0, 13) + '...' : obfuscateMAC(mac);
+                return '<div onclick="showDevice(\\'' + mac + '\\')" title="' + mac + '" style="font-family: monospace; font-size: 0.72rem; color: var(--text-secondary); padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border-color); cursor: pointer;">' + shownMac + '</div>';
+            }).join('');
+            return '<div style="margin-bottom: 1rem; border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden;">' +
+                '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 0.75rem; background: var(--bg-tertiary);">' +
+                '<div style="min-width: 0;">' +
+                '<span style="font-size: 0.85rem; color: var(--text-primary); font-weight: 600;">' + (g.type_icon || '') + ' ' + name + '</span>' + randomized +
+                '<div style="font-size: 0.65rem; color: var(--text-muted);">' + g.device_count + ' addresses' + vendor + ' · ' + g.total_sightings + ' sightings · last seen <span title="' + lastSeenTooltip + '">' + lastSeen + '</span></div>' +
+                '</div>' +
+                '<span style="font-size: 1.1rem; font-weight: 700; color: var(--accent-blue); margin-left: 0.75rem;">' + g.device_count + '</span>' +
+                '</div>' + members + '</div>';
         }
 
         function isMacOSUUID(addr) {
@@ -1779,13 +1859,24 @@ HTML_TEMPLATE = """
                 '<div class="rssi-chart" id="rssi-chart"><div style="color: var(--text-muted); font-size: 0.75rem; text-align: center; padding-top: 1.5rem;">Loading...</div></div>' +
                 '</div>' +
                 '<div class="heatmap-section">' +
-                '<div class="heatmap-title">Correlated Devices</div>' +
+                '<div class="heatmap-title" style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">' +
+                '<span>Correlated Devices</span>' +
+                '<span style="font-weight: normal; font-size: 0.65rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.3rem;">' +
+                'gap <input id="corr-gap" type="number" min="1" max="240" value="15" title="Idle minutes that end a presence session" onchange="reloadCorrelated()" style="width: 44px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 3px; padding: 1px 3px; font-size: 0.65rem;">m' +
+                ' · sync ±<input id="corr-edge" type="number" min="1" max="120" value="5" title="Tolerance (minutes) for matching arrivals and departures" onchange="reloadCorrelated()" style="width: 44px; background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 3px; padding: 1px 3px; font-size: 0.65rem;">m' +
+                '</span>' +
+                '</div>' +
                 '<div id="correlated-devices" class="heatmap"><div style="color: var(--text-muted);">Loading...</div></div>' +
+                '</div>' +
+                '<div class="heatmap-section">' +
+                '<div class="heatmap-title">Likely Same Device (MAC rotation)</div>' +
+                '<div id="rotation-candidates" class="heatmap"><div style="color: var(--text-muted);">Loading...</div></div>' +
                 '</div>';
 
             loadRssiChart(d.mac);
             loadDwellStats(d.mac);
             loadCorrelatedDevices(d.mac);
+            loadRotationCandidates(d.mac);
             loadGroupsForDevice(d.group_id);
         }
 
@@ -1905,11 +1996,22 @@ HTML_TEMPLATE = """
             }
         }
 
+        let correlationMac = null;
+
+        function reloadCorrelated() {
+            if (correlationMac) loadCorrelatedDevices(correlationMac);
+        }
+
         async function loadCorrelatedDevices(mac) {
+            correlationMac = mac;
             const container = document.getElementById('correlated-devices');
             if (!container) return;
+            const gapEl = document.getElementById('corr-gap');
+            const edgeEl = document.getElementById('corr-edge');
+            const gap = Math.max(1, parseInt(gapEl && gapEl.value) || 15);
+            const edge = Math.max(1, parseInt(edgeEl && edgeEl.value) || 5);
             try {
-                const response = await fetch('/api/device/' + encodeURIComponent(mac) + '/correlation?days=30');
+                const response = await fetch('/api/device/' + encodeURIComponent(mac) + '/correlation?days=30&gap=' + gap + '&edge=' + edge);
                 const data = await response.json();
                 if (!data.correlated_devices || data.correlated_devices.length === 0) {
                     container.innerHTML = '<div style="color: var(--text-muted); font-size: 0.75rem;">No correlated devices found</div>';
@@ -1921,16 +2023,69 @@ HTML_TEMPLATE = """
                     const rawSecondaryInfo = c.friendly_name ? (c.vendor || c.mac) : c.mac;
                     const secondaryInfo = (c.friendly_name && c.vendor) ? rawSecondaryInfo : obfuscateMAC(rawSecondaryInfo);
                     const corrBar = '<div style="background: var(--accent-red); height: 4px; width: ' + c.correlation_score + '%; border-radius: 2px;"></div>';
-                    return '<div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); cursor: pointer;" onclick="openDeviceModal(\\'' + c.mac + '\\')">' +
+                    const syncedEdges = (c.synced_arrivals || 0) + (c.synced_departures || 0);
+                    const syncLine = syncedEdges > 0
+                        ? '<div style="font-size: 0.65rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">⇄ ' + (c.synced_arrivals || 0) + ' arrivals / ' + (c.synced_departures || 0) + ' departures in sync</div>'
+                        : '';
+                    const corrTitle = 'Correlation ' + c.correlation_score + '% (co-presence ' + (c.cooccurrence_score != null ? c.cooccurrence_score : 0) + '%, transition sync ' + (c.transition_score != null ? c.transition_score : 0) + '%)';
+                    return '<div title="' + corrTitle + '" style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); cursor: pointer;" onclick="showDevice(\\'' + c.mac + '\\')">' +
                         '<div style="flex: 1; min-width: 0;">' +
                         '<div style="font-size: 0.8rem; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + primaryName + '</div>' +
                         '<div style="font-size: 0.65rem; color: var(--text-muted); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + secondaryInfo + '</div>' +
+                        syncLine +
                         '</div>' +
                         '<div style="display: flex; align-items: center; gap: 0.5rem; margin-left: 0.5rem;">' +
                         '<div style="width: 50px;">' + corrBar + '</div>' +
                         '<span style="font-size: 0.7rem; color: var(--accent-amber); min-width: 32px; text-align: right;">' + c.correlation_score + '%</span>' +
                         '</div></div>';
                 }).join('');
+            } catch (error) {
+                container.innerHTML = '<div style="color: var(--text-muted);">Error loading data</div>';
+            }
+        }
+
+        function formatPing(seconds) {
+            if (seconds == null) return 'n/a';
+            if (seconds >= 90) return '~' + Math.round(seconds / 60) + 'm';
+            return '~' + Math.round(seconds) + 's';
+        }
+
+        async function loadRotationCandidates(mac) {
+            const container = document.getElementById('rotation-candidates');
+            if (!container) return;
+            try {
+                const response = await fetch('/api/device/' + encodeURIComponent(mac) + '/rotation?days=7');
+                const data = await response.json();
+                const candidates = data.candidates || [];
+                const t = data.target;
+                let html = '';
+                if (t) {
+                    html += '<div style="font-size: 0.65rem; color: var(--text-muted); margin-bottom: 0.4rem;">This device: RSSI ' + t.mean_rssi + '±' + t.rssi_stddev + ' dBm · ping ' + formatPing(t.ping_interval_seconds) + '</div>';
+                }
+                if (candidates.length === 0) {
+                    html += '<div style="color: var(--text-muted); font-size: 0.75rem;">No likely rotation siblings found</div>';
+                    container.innerHTML = html;
+                    return;
+                }
+                html += candidates.map(c => {
+                    const rawPrimary = c.friendly_name || c.vendor || c.mac;
+                    const primaryName = c.friendly_name ? obfuscateName(rawPrimary) : (c.vendor ? rawPrimary : obfuscateMAC(c.mac));
+                    const overlapPct = Math.round((c.overlap_ratio || 0) * 100);
+                    const detail = 'RSSI ' + c.mean_rssi + '±' + c.rssi_stddev + ' (Δ' + c.rssi_delta + ') · ping ' + formatPing(c.ping_interval_seconds) + ' · ' + overlapPct + '% overlap';
+                    const nameBadge = c.name_match ? ' <span style="font-size: 0.6rem; color: var(--accent-amber); border: 1px solid var(--accent-amber); border-radius: 3px; padding: 0 0.25rem; vertical-align: middle;">name match</span>' : '';
+                    const bar = '<div style="background: var(--accent-amber); height: 4px; width: ' + c.confidence + '%; border-radius: 2px;"></div>';
+                    const title = 'Confidence ' + c.confidence + '% — ' + (c.name_match ? 'shares this device\\'s advertised name, plus ' : '') + 'similar signal strength, non-overlapping presence, similar ping cadence. Heuristic, not definitive.';
+                    return '<div title="' + title + '" style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); cursor: pointer;" onclick="showDevice(\\'' + c.mac + '\\')">' +
+                        '<div style="flex: 1; min-width: 0;">' +
+                        '<div style="font-size: 0.8rem; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + primaryName + nameBadge + '</div>' +
+                        '<div style="font-size: 0.65rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' + detail + '</div>' +
+                        '</div>' +
+                        '<div style="display: flex; align-items: center; gap: 0.5rem; margin-left: 0.5rem;">' +
+                        '<div style="width: 50px;">' + bar + '</div>' +
+                        '<span style="font-size: 0.7rem; color: var(--accent-amber); min-width: 32px; text-align: right;">' + c.confidence + '%</span>' +
+                        '</div></div>';
+                }).join('');
+                container.innerHTML = html;
             } catch (error) {
                 container.innerHTML = '<div style="color: var(--text-muted);">Error loading data</div>';
             }
@@ -2073,21 +2228,73 @@ HTML_TEMPLATE = """
         }
 
         function exportData() {
-            const csv = ['MAC,Vendor,Identifier,Class,Sightings,Last_Contact,Group'];
-            const exportDevices = selectedMacs.size > 0
-                ? allDevices.filter(d => selectedMacs.has(d.mac))
-                : allDevices;
-            exportDevices.forEach(d => {
-                const mac = obfuscateMAC(d.mac);
-                const name = d.friendly_name ? obfuscateName(d.friendly_name) : '';
-                csv.push([mac, d.vendor || '', name, d.device_type || '', d.total_sightings, d.last_seen || '', d.group_name || ''].map(csvField).join(','));
-            });
-            const blob = new Blob([csv.join('\\n')], { type: 'text/csv' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'bluehood-recon-' + new Date().toISOString().split('T')[0] + '.csv';
-            a.click();
+            const exportBtn = document.getElementById('export-btn');
+            const originalLabel = exportBtn ? exportBtn.textContent : null;
+            try {
+                // A selection or active date filter can reference devices across
+                // pages or outside the current list filter, so pin the export to
+                // those exact MACs; otherwise let the server honor the list filter.
+                let macs = null;
+                if (selectedMacs.size > 0) {
+                    macs = [...selectedMacs];
+                } else if (dateFilteredDevices !== null) {
+                    macs = dateFilteredDevices.map(d => d.mac);
+                }
+                if (macs && macs.length === 0) {
+                    alert('No devices to export for the current view.');
+                    return;
+                }
+
+                // The server streams the CSV directly to disk. Building it in the
+                // browser meant downloading every sighting as one huge JSON blob,
+                // which never finished on a busy sensor.
+                const formatSelect = document.getElementById('export-format');
+                const exportFormat = formatSelect ? formatSelect.value : 'csv';
+                const fields = { screenshot: screenshotMode ? '1' : '0', format: exportFormat };
+                if (macs) {
+                    fields.macs = macs.join(',');
+                } else {
+                    fields.filter = currentFilter;
+                    fields.sort = sortState.column;
+                    fields.direction = getServerSortDirection();
+                    const searchInput = document.getElementById('search');
+                    const searchTerm = searchInput ? searchInput.value.trim() : '';
+                    if (searchTerm) fields.search = searchTerm;
+                }
+
+                // POST through a hidden form + iframe so a large selection isn't
+                // capped by URL length and the page is never navigated away.
+                let iframe = document.getElementById('export-sink');
+                if (!iframe) {
+                    iframe = document.createElement('iframe');
+                    iframe.id = 'export-sink';
+                    iframe.name = 'export-sink';
+                    iframe.style.display = 'none';
+                    document.body.appendChild(iframe);
+                }
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '/api/devices/export';
+                form.target = 'export-sink';
+                Object.keys(fields).forEach(k => {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = k;
+                    input.value = fields[k];
+                    form.appendChild(input);
+                });
+                document.body.appendChild(form);
+                if (exportBtn) { exportBtn.disabled = true; exportBtn.textContent = 'Exporting...'; }
+                form.submit();
+                setTimeout(() => {
+                    if (form.parentNode) document.body.removeChild(form);
+                    if (exportBtn) { exportBtn.disabled = false; exportBtn.textContent = originalLabel; }
+                }, 2000);
+            } catch (error) {
+                console.error('Export error:', error);
+                alert('Export failed. Please try again.');
+                if (exportBtn) { exportBtn.disabled = false; exportBtn.textContent = originalLabel; }
+            }
         }
 
         // Filter handlers
@@ -2394,7 +2601,12 @@ SETTINGS_TEMPLATE = """
                         <div class="form-group">
                             <label class="form-label">Prune Sightings Older Than (days)</label>
                             <input type="number" class="form-input" id="prune_days" value="0" min="0" max="3650" style="width: 160px;">
-                            <div class="form-hint">Automatically delete sighting records older than this many days. 0 = keep forever.</div>
+                            <div class="form-hint">Automatically prune records older than this many days. 0 = keep forever.</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Only Prune Devices With Fewer Than (sightings)</label>
+                            <input type="number" class="form-input" id="prune_min_sightings" value="0" min="0" max="1000000" style="width: 160px;">
+                            <div class="form-hint">When set above 0, pruning removes whole stale devices (and their sightings) that are both older than the age limit and have fewer than this many total sightings. Watched devices are never pruned. 0 = prune old sightings by age only, keeping device records.</div>
                         </div>
                     </div>
                 </div>
@@ -2505,6 +2717,7 @@ SETTINGS_TEMPLATE = """
                 document.getElementById('heartbeat_url').value = data.heartbeat_url || '';
                 document.getElementById('heartbeat_interval').value = data.heartbeat_interval || 300;
                 document.getElementById('prune_days').value = data.prune_days || 0;
+                document.getElementById('prune_min_sightings').value = data.prune_min_sightings || 0;
             } catch (error) { showStatus('Error loading configuration', 'error'); }
         }
 
@@ -2521,6 +2734,7 @@ SETTINGS_TEMPLATE = """
                 heartbeat_url: document.getElementById('heartbeat_url').value,
                 heartbeat_interval: parseInt(document.getElementById('heartbeat_interval').value) || 300,
                 prune_days: parseInt(document.getElementById('prune_days').value) || 0,
+                prune_min_sightings: parseInt(document.getElementById('prune_min_sightings').value) || 0,
             };
         }
 
