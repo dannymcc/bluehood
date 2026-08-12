@@ -7,6 +7,7 @@ import logging
 import os
 import platform
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -44,9 +45,65 @@ class BluehoodDaemon:
         self._http_session: aiohttp.ClientSession | None = None
         self._start_time = time.monotonic()
 
+    @staticmethod
+    async def _wait_for_bluetooth(max_wait: int = 120, interval: int = 5) -> None:
+        """Wait for the macOS Bluetooth controller to be powered on.
+
+        On macOS, launchd may start this daemon at login before
+        CoreBluetooth has finished initialising.  We poll the
+        ControllerPowerState pref (works on all modern macOS versions)
+        to avoid the "adapter busy" errors that bleak raises when it
+        tries to scan against a not-yet-ready adapter.
+
+        This is a no-op on non-macOS platforms.
+        """
+        if platform.system() != "Darwin":
+            return
+
+        waited = 0
+        logger.info("macOS detected – waiting for Bluetooth controller …")
+
+        while waited < max_wait:
+            try:
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    [
+                        "defaults", "read",
+                        "/Library/Preferences/com.apple.Bluetooth",
+                        "ControllerPowerState",
+                    ],
+                    capture_output=True, text=True, timeout=5,
+                )
+                power_state = result.stdout.strip()
+                if power_state == "1":
+                    logger.info(
+                        "Bluetooth controller is on (waited %ds).", waited
+                    )
+                    # Extra grace period for CoreBluetooth framework
+                    # initialisation after the controller reports ready.
+                    await asyncio.sleep(3)
+                    return
+                else:
+                    logger.debug(
+                        "Bluetooth power state: %s (not ready yet)", power_state
+                    )
+            except Exception as exc:
+                logger.debug("Bluetooth check failed: %s", exc)
+
+            await asyncio.sleep(interval)
+            waited += interval
+
+        logger.warning(
+            "Bluetooth not confirmed ready after %ds – proceeding anyway.", max_wait
+        )
+
     async def start(self) -> None:
         """Start the daemon."""
         logger.info("Starting bluehood daemon...")
+
+        # Block until the Bluetooth adapter is ready (macOS only).
+        await self._wait_for_bluetooth()
+
         if self.scanner._use_dual_adapter:
             logger.info(f"Dual-adapter mode: BLE on {self.scanner.adapter}, classic on {self.scanner.classic_adapter}")
         else:
@@ -314,10 +371,30 @@ class BluehoodDaemon:
             mac = request.get("mac")
             days = request.get("days", 30)
             window_minutes = request.get("window_minutes", 5)
+            gap_minutes = request.get("gap_minutes", 15)
+            edge_minutes = request.get("edge_minutes")
             if mac:
-                correlated = await db.get_correlated_devices(mac, days, window_minutes)
+                correlated = await db.get_correlated_devices(
+                    mac, days, window_minutes, gap_minutes, edge_minutes
+                )
                 return {"status": "ok", "correlated_devices": correlated}
             return {"status": "error", "message": "Missing mac"}
+
+        elif cmd == "get_rotation_candidates":
+            mac = request.get("mac")
+            days = request.get("days", 7)
+            if mac:
+                rotation = await db.get_rotation_candidates(mac, days)
+                return {"status": "ok", **rotation}
+            return {"status": "error", "message": "Missing mac"}
+
+        elif cmd == "get_name_groups":
+            include_ignored = request.get("include_ignored", False)
+            min_devices = request.get("min_devices", 2)
+            groups = await db.get_name_groups(
+                min_devices=min_devices, include_ignored=include_ignored
+            )
+            return {"status": "ok", "name_groups": groups}
 
         elif cmd == "get_proximity_stats":
             mac = request.get("mac")
@@ -430,10 +507,27 @@ class BluehoodDaemon:
             try:
                 settings = await db.get_settings()
                 prune_days = settings.prune_days
+                min_sightings = settings.prune_min_sightings
                 if prune_days > 0:
-                    deleted = await db.cleanup_old_sightings(prune_days)
-                    if deleted:
-                        logger.info(f"Pruned {deleted} sightings older than {prune_days} days")
+                    if min_sightings > 0:
+                        # Remove whole stale devices (and their sightings) that
+                        # were last seen >prune_days ago and seen <min_sightings times.
+                        deleted = await db.prune_stale_devices(prune_days, min_sightings)
+                        if deleted:
+                            logger.info(
+                                f"Pruned {deleted} stale devices "
+                                f"(older than {prune_days} days, fewer than {min_sightings} sightings)"
+                            )
+                    else:
+                        # Age-only: trim old sighting rows, keep device records.
+                        deleted = await db.cleanup_old_sightings(prune_days)
+                        if deleted:
+                            logger.info(f"Pruned {deleted} sightings older than {prune_days} days")
+                    # Pruning frees pages inside the database file but doesn't
+                    # shrink it; reclaim the disk space once enough has built up.
+                    reclaimed = await db.vacuum_if_fragmented()
+                    if reclaimed:
+                        logger.info(f"Vacuumed database, reclaimed ~{reclaimed} MB on disk")
                     await asyncio.sleep(3600)  # Once per hour
                 else:
                     await asyncio.sleep(300)  # Re-check for config changes

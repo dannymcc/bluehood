@@ -1,12 +1,18 @@
 """Database operations for bluehood."""
 
+import bisect
 import json
+import logging
+import re
+import statistics
 import aiosqlite
 from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass
 
-from .config import DB_PATH, HEARTBEAT_URL, HEARTBEAT_INTERVAL, PRUNE_DAYS
+from .config import DB_PATH, HEARTBEAT_URL, HEARTBEAT_INTERVAL, PRUNE_DAYS, PRUNE_MIN_SIGHTINGS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,6 +73,7 @@ class Settings:
     heartbeat_url: Optional[str] = None       # None = disabled
     heartbeat_interval: int = 300             # seconds
     prune_days: int = 0                       # 0 = disabled
+    prune_min_sightings: int = 0              # 0 = prune by age only (keep device records)
     # Authentication settings
     auth_enabled: bool = False
     auth_username: Optional[str] = None
@@ -123,10 +130,141 @@ _DEVICE_FILTER_TYPES = {
 }
 
 
+# The daemon runs the scan loop, the web server, and the prune loop in a single
+# event loop, but each call below opens its own connection (each in its own
+# thread). Those connections contend for SQLite's single write lock, and WAL can
+# silently fall back to rollback-journal mode on some Docker bind mounts (where
+# reads also block writes). Give every connection a generous busy timeout so it
+# waits for the lock instead of immediately raising "database is locked".
+_DB_TIMEOUT_SECONDS = 30.0
+
+
+def _connect() -> aiosqlite.Connection:
+    """Open a database connection sharing a common busy timeout."""
+    return aiosqlite.connect(DB_PATH, timeout=_DB_TIMEOUT_SECONDS)
+
+
+async def _enable_wal(db: aiosqlite.Connection) -> None:
+    """Enable WAL mode and warn loudly if SQLite silently falls back.
+
+    WAL is far more resilient to corruption on an unclean shutdown than the
+    default rollback journal. The PRAGMA can be accepted but silently fall back
+    to 'delete'/'truncate' mode on some filesystems (notably certain Docker
+    bind mounts) — which is exactly the condition that lets an interrupted write
+    leave an index out of sync with its table. Read the mode back and surface
+    the fallback so it is diagnosable rather than silent.
+    """
+    async with db.execute("PRAGMA journal_mode=WAL") as cursor:
+        row = await cursor.fetchone()
+    mode = (row[0] if row else "") or ""
+    if mode.lower() != "wal":
+        logger.warning(
+            "SQLite journal_mode is %r, not 'wal' (WAL fallback). The database "
+            "is more vulnerable to corruption on unclean shutdown; check the "
+            "filesystem backing %s.", mode, DB_PATH,
+        )
+
+
+_TREE_PAGE_RE = re.compile(r"\btree\s+(\d+)\s+page\b", re.IGNORECASE)
+
+
+async def _index_rootpages(db: aiosqlite.Connection) -> dict:
+    """Map each b-tree root page number to its object type ('table'/'index').
+
+    integrity_check reports page-level damage as "Tree N page M ..." where N is
+    the b-tree's root page. Resolving N back to its type lets us tell index
+    corruption (rebuildable) from table corruption (data loss) when the message
+    itself doesn't name an index.
+    """
+    async with db.execute(
+        "SELECT rootpage, type FROM sqlite_master WHERE rootpage IS NOT NULL"
+    ) as cursor:
+        return {row[0]: row[1] for row in await cursor.fetchall()}
+
+
+def _is_index_only(problems: list, roots: dict) -> bool:
+    """True only if every reported problem is confined to an index b-tree.
+
+    A line is index-related if it names an index, or points at a "Tree N" whose
+    root page belongs to an index. Anything ambiguous or table-related makes this
+    return False so we refuse to auto-repair and advise a restore instead.
+    """
+    for problem in problems:
+        for line in problem.splitlines():
+            line = line.strip()
+            if not line or line.startswith("***"):  # section header, not a fault
+                continue
+            if "index" in line.lower():
+                continue
+            match = _TREE_PAGE_RE.search(line)
+            if match and roots.get(int(match.group(1))) == "index":
+                continue
+            return False
+    return True
+
+
+async def _check_and_repair_integrity(db: aiosqlite.Connection) -> None:
+    """Verify integrity at startup and self-heal index-only corruption.
+
+    SQLite index corruption (e.g. "wrong # of entries in index ...") is fully
+    recoverable from the intact table data via REINDEX, with no data loss, so we
+    rebuild automatically. Corruption that touches table/page data is NOT safely
+    auto-repairable; we surface it loudly and leave the file untouched for manual
+    recovery from a backup.
+    """
+    try:
+        async with db.execute("PRAGMA integrity_check") as cursor:
+            rows = await cursor.fetchall()
+    except aiosqlite.DatabaseError as exc:
+        logger.error(
+            "Integrity check could not run (%s); the database may be severely "
+            "corrupt. Restore %s from a backup.", exc, DB_PATH,
+        )
+        return
+
+    problems = [r[0] for r in rows if r and r[0] != "ok"]
+    if not problems:
+        return
+
+    sample = "; ".join(problems[:5])
+    roots = await _index_rootpages(db)
+    if not _is_index_only(problems, roots):
+        logger.error(
+            "Database corruption detected that is NOT index-only (%d issue(s)): "
+            "%s. This is not safely auto-repairable; restore %s from a backup.",
+            len(problems), sample, DB_PATH,
+        )
+        return
+
+    logger.warning(
+        "Index corruption detected (%d issue(s)); rebuilding indexes via "
+        "REINDEX: %s", len(problems), sample,
+    )
+    try:
+        await db.execute("REINDEX")
+        await db.commit()
+        async with db.execute("PRAGMA integrity_check") as cursor:
+            rows = await cursor.fetchall()
+    except aiosqlite.DatabaseError as exc:
+        logger.error("REINDEX failed (%s); restore %s from a backup.", exc, DB_PATH)
+        return
+
+    remaining = [r[0] for r in rows if r and r[0] != "ok"]
+    if remaining:
+        logger.error(
+            "Index rebuild did not fully repair the database; %d issue(s) "
+            "remain: %s. Restore %s from a backup.",
+            len(remaining), "; ".join(remaining[:5]), DB_PATH,
+        )
+    else:
+        logger.info("Database integrity restored: REINDEX successful.")
+
+
 async def init_db() -> None:
     """Initialize the database schema."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("PRAGMA journal_mode=WAL")
+    async with _connect() as db:
+        await _enable_wal(db)
+        await _check_and_repair_integrity(db)
         await db.executescript(SCHEMA)
 
         # Migrations for devices table columns
@@ -184,7 +322,7 @@ def _parse_device_row(row) -> Device:
 
 async def get_device(mac: str) -> Optional[Device]:
     """Get a device by MAC address."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM devices WHERE mac = ?", (mac,)
@@ -197,7 +335,7 @@ async def get_device(mac: str) -> Optional[Device]:
 
 async def get_all_devices(include_ignored: bool = True) -> list[Device]:
     """Get all devices."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         query = "SELECT * FROM devices"
         if not include_ignored:
@@ -255,6 +393,17 @@ def _build_device_query_filters(
     return where_clause, params
 
 
+_DEVICE_SORT_MAP = {
+    "class": "COALESCE(d.device_type, 'unknown')",
+    "mac": "d.mac",
+    "vendor": "COALESCE(d.vendor, '')",
+    "identifier": "COALESCE(d.friendly_name, '')",
+    "sightings": "d.total_sightings",
+    "last_seen": "COALESCE(d.last_seen, '')",
+    "group": "COALESCE(g.name, '')",
+}
+
+
 async def get_devices_page(
     page: int = 1,
     page_size: int = 50,
@@ -270,16 +419,7 @@ async def get_devices_page(
     safe_page_size = max(1, min(page_size, 500))
     offset = (safe_page - 1) * safe_page_size
 
-    sort_map = {
-        "class": "COALESCE(d.device_type, 'unknown')",
-        "mac": "d.mac",
-        "vendor": "COALESCE(d.vendor, '')",
-        "identifier": "COALESCE(d.friendly_name, '')",
-        "sightings": "d.total_sightings",
-        "last_seen": "COALESCE(d.last_seen, '')",
-        "group": "COALESCE(g.name, '')",
-    }
-    sort_expr = sort_map.get(sort_column, sort_map["last_seen"])
+    sort_expr = _DEVICE_SORT_MAP.get(sort_column, _DEVICE_SORT_MAP["last_seen"])
     direction = "ASC" if str(sort_direction).lower() == "asc" else "DESC"
 
     where_clause, params = _build_device_query_filters(
@@ -292,7 +432,7 @@ async def get_devices_page(
     base_query = "FROM devices d LEFT JOIN device_groups g ON g.id = d.group_id"
     order_clause = f" ORDER BY {sort_expr} {direction}, d.mac ASC"
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
 
         async with db.execute(
@@ -309,6 +449,85 @@ async def get_devices_page(
         ) as cursor:
             rows = await cursor.fetchall()
             return ([_parse_device_row(row) for row in rows], total)
+
+
+async def get_devices_export(
+    include_ignored: bool = True,
+    device_filter: str = "all",
+    search: Optional[str] = None,
+    sort_column: str = "last_seen",
+    sort_direction: str = "desc",
+    exclude_randomized: bool = True,
+) -> list[Device]:
+    """Return every device matching the query (no pagination), for CSV export."""
+    sort_expr = _DEVICE_SORT_MAP.get(sort_column, _DEVICE_SORT_MAP["last_seen"])
+    direction = "ASC" if str(sort_direction).lower() == "asc" else "DESC"
+
+    where_clause, params = _build_device_query_filters(
+        include_ignored=include_ignored,
+        device_filter=device_filter,
+        search=search,
+        exclude_randomized=exclude_randomized,
+    )
+
+    base_query = "FROM devices d LEFT JOIN device_groups g ON g.id = d.group_id"
+    order_clause = f" ORDER BY {sort_expr} {direction}, d.mac ASC"
+
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"SELECT d.* {base_query}{where_clause}{order_clause}",
+            params,
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_parse_device_row(row) for row in rows]
+
+
+async def get_sightings_for_export(
+    macs: list[str],
+    days: Optional[int] = None,
+) -> list[dict]:
+    """Return every raw sighting (mac, timestamp, rssi) for the given devices.
+
+    This is the un-aggregated detail behind the device export: one record per
+    actual contact, not a summary. ``days`` limits to the last N days when set;
+    the default (None) exports the full history. Sightings are pulled in MAC
+    chunks to stay within SQLite's bound-parameter limit on large exports and
+    returned ordered by MAC then time.
+    """
+    if not macs:
+        return []
+
+    rows_out: list[dict] = []
+    chunk = 400  # well under SQLite's default bound-parameter limit
+
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        for start in range(0, len(macs), chunk):
+            subset = macs[start:start + chunk]
+            placeholders = ", ".join("?" for _ in subset)
+            where = f"mac IN ({placeholders})"
+            params: list = list(subset)
+            if days is not None:
+                where += " AND timestamp > datetime('now', ?)"
+                params.append(f"-{days} days")
+
+            async with db.execute(
+                f"""
+                SELECT mac, timestamp, rssi FROM sightings
+                WHERE {where}
+                ORDER BY mac ASC, timestamp ASC
+                """,
+                params,
+            ) as cursor:
+                async for row in cursor:
+                    rows_out.append({
+                        "mac": row["mac"],
+                        "timestamp": row["timestamp"],
+                        "rssi": row["rssi"],
+                    })
+
+    return rows_out
 
 
 async def get_dashboard_stats(include_ignored: bool = True) -> dict:
@@ -337,7 +556,7 @@ async def get_dashboard_stats(include_ignored: bool = True) -> dict:
         {where_clause}
     """
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(query, (today_start.isoformat(), one_hour_ago.isoformat())) as cursor:
             row = await cursor.fetchone()
@@ -385,7 +604,7 @@ async def get_global_stats(include_ignored: bool = True) -> dict:
         {where_clause}
     """
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(query, (today_start,)) as cursor:
             row = await cursor.fetchone()
@@ -416,7 +635,7 @@ async def upsert_device(
     now = datetime.now()
     uuids_json = json.dumps(service_uuids) if service_uuids else None
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         # Check if device exists
         async with db.execute("SELECT * FROM devices WHERE mac = ?", (mac,)) as cursor:
@@ -496,7 +715,7 @@ async def upsert_device(
 
 async def set_friendly_name(mac: str, name: str) -> None:
     """Set a friendly name for a device."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "UPDATE devices SET friendly_name = ? WHERE mac = ?",
             (name, mac)
@@ -506,7 +725,7 @@ async def set_friendly_name(mac: str, name: str) -> None:
 
 async def set_ignored(mac: str, ignored: bool) -> None:
     """Set whether a device is ignored."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "UPDATE devices SET ignored = ? WHERE mac = ?",
             (1 if ignored else 0, mac)
@@ -516,7 +735,7 @@ async def set_ignored(mac: str, ignored: bool) -> None:
 
 async def set_watched(mac: str, watched: bool) -> None:
     """Set whether a device is a Device of Interest (watched)."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "UPDATE devices SET watched = ? WHERE mac = ?",
             (1 if watched else 0, mac)
@@ -526,7 +745,7 @@ async def set_watched(mac: str, watched: bool) -> None:
 
 async def set_device_type(mac: str, device_type: str) -> None:
     """Set the device type for a device."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "UPDATE devices SET device_type = ? WHERE mac = ?",
             (device_type, mac)
@@ -536,7 +755,7 @@ async def set_device_type(mac: str, device_type: str) -> None:
 
 async def set_device_notes(mac: str, notes: Optional[str]) -> None:
     """Set operator notes for a device."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "UPDATE devices SET notes = ? WHERE mac = ?",
             (notes if notes else None, mac)
@@ -546,7 +765,7 @@ async def set_device_notes(mac: str, notes: Optional[str]) -> None:
 
 async def mark_new_device_notified(mac: str) -> None:
     """Mark a device's new-device notification as sent."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "UPDATE devices SET new_device_notified = 1 WHERE mac = ?",
             (mac,)
@@ -556,7 +775,7 @@ async def mark_new_device_notified(mac: str) -> None:
 
 async def get_sightings(mac: str, days: int = 30) -> list[Sighting]:
     """Get sightings for a device within the last N days."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
@@ -580,7 +799,7 @@ async def get_sightings(mac: str, days: int = 30) -> list[Sighting]:
 
 async def get_hourly_distribution(mac: str, days: int = 30) -> dict[int, int]:
     """Get hourly distribution of sightings for pattern analysis."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         async with db.execute(
             """
             SELECT strftime('%H', timestamp) as hour, COUNT(*) as count
@@ -597,7 +816,7 @@ async def get_hourly_distribution(mac: str, days: int = 30) -> dict[int, int]:
 
 async def get_daily_distribution(mac: str, days: int = 30) -> dict[int, int]:
     """Get daily distribution of sightings (0=Monday, 6=Sunday)."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         async with db.execute(
             """
             SELECT strftime('%w', timestamp) as day, COUNT(*) as count
@@ -615,7 +834,7 @@ async def get_daily_distribution(mac: str, days: int = 30) -> dict[int, int]:
 
 async def get_daily_sightings(mac: str, days: int = 30) -> list[dict]:
     """Get daily sighting counts for timeline visualization."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         async with db.execute(
             """
             SELECT date(timestamp) as date, COUNT(*) as count, AVG(rssi) as avg_rssi
@@ -639,13 +858,92 @@ async def get_daily_sightings(mac: str, days: int = 30) -> list[dict]:
 
 async def cleanup_old_sightings(days: int = 90) -> int:
     """Remove sightings older than N days. Returns count deleted."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         cursor = await db.execute(
             "DELETE FROM sightings WHERE timestamp < datetime('now', ?)",
             (f"-{days} days",)
         )
         await db.commit()
         return cursor.rowcount
+
+
+async def vacuum_if_fragmented(min_free_mb: float = 64.0) -> float:
+    """VACUUM the database when it has accumulated free pages worth reclaiming.
+
+    Deleting rows (e.g. pruning stale devices) frees pages inside the file but
+    does not shrink the file on disk — only VACUUM does, by rewriting it. VACUUM
+    is expensive and takes a brief exclusive lock, so we only run it once the
+    freelist is large enough to be worth the cost. After a VACUUM the freelist
+    drops back to ~0, so this self-throttles: it fires after a big prune and then
+    stays quiet until fragmentation builds up again.
+
+    Returns the approximate megabytes that were free before vacuuming (0.0 when
+    skipped).
+    """
+    async with _connect() as db:
+        async with db.execute("PRAGMA freelist_count") as cursor:
+            free_pages = (await cursor.fetchone())[0]
+        async with db.execute("PRAGMA page_size") as cursor:
+            page_size = (await cursor.fetchone())[0]
+
+        free_mb = free_pages * page_size / (1024 * 1024)
+        if free_mb < min_free_mb:
+            return 0.0
+
+        # VACUUM cannot run inside a transaction; make sure none is open.
+        await db.commit()
+        await db.execute("VACUUM")
+        return round(free_mb, 1)
+
+
+async def prune_stale_devices(days: int, min_sightings: int) -> int:
+    """Delete stale devices and all of their sightings.
+
+    A device is pruned only when it has not been seen for more than `days`
+    days AND has accumulated fewer than `min_sightings` total sightings.
+    Watched devices (Devices of Interest) are never pruned. The foreign key
+    on sightings is not enforced by SQLite, so the sighting rows are removed
+    explicitly. Returns the number of devices deleted.
+
+    Deletions are done in small MAC batches, each committed on its own. On a
+    large database a single bulk DELETE can hold the write lock for over a
+    minute, which both freezes the scanner and trips the busy timeout when the
+    scanner is actively writing — so the prune would throw and silently delete
+    nothing. Short, frequently-committed transactions let the scanner interleave.
+    """
+    if days <= 0 or min_sightings <= 0:
+        return 0
+
+    async with _connect() as db:
+        cutoff = f"-{days} days"
+        async with db.execute(
+            """
+            SELECT mac FROM devices
+            WHERE COALESCE(watched, 0) = 0
+              AND last_seen < datetime('now', ?)
+              AND total_sightings < ?
+            """,
+            (cutoff, min_sightings),
+        ) as cursor:
+            macs = [row[0] for row in await cursor.fetchall()]
+
+        if not macs:
+            return 0
+
+        deleted = 0
+        chunk = 400  # short transactions; also stays under SQLite's bound-param limit
+        for start in range(0, len(macs), chunk):
+            subset = macs[start:start + chunk]
+            placeholders = ", ".join("?" for _ in subset)
+            await db.execute(
+                f"DELETE FROM sightings WHERE mac IN ({placeholders})", subset
+            )
+            cursor = await db.execute(
+                f"DELETE FROM devices WHERE mac IN ({placeholders})", subset
+            )
+            await db.commit()
+            deleted += cursor.rowcount
+        return deleted
 
 
 async def search_devices(
@@ -657,7 +955,7 @@ async def search_devices(
     Search for devices by MAC and/or time range.
     Returns devices with sighting count in the specified range.
     """
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
 
         # Build query based on filters
@@ -738,7 +1036,7 @@ async def search_devices(
 
 async def get_settings() -> Settings:
     """Get all application settings."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT key, value FROM settings") as cursor:
             rows = await cursor.fetchall()
@@ -756,6 +1054,7 @@ async def get_settings() -> Settings:
         heartbeat_url=settings_dict.get("heartbeat_url", HEARTBEAT_URL),
         heartbeat_interval=int(settings_dict.get("heartbeat_interval", str(HEARTBEAT_INTERVAL))),
         prune_days=int(settings_dict.get("prune_days", str(PRUNE_DAYS))),
+        prune_min_sightings=int(settings_dict.get("prune_min_sightings", str(PRUNE_MIN_SIGHTINGS))),
         auth_enabled=settings_dict.get("auth_enabled", "0") == "1",
         auth_username=settings_dict.get("auth_username"),
         auth_password_hash=settings_dict.get("auth_password_hash"),
@@ -764,7 +1063,7 @@ async def get_settings() -> Settings:
 
 async def set_setting(key: str, value: str) -> None:
     """Set a single setting value."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
             (key, value)
@@ -774,7 +1073,7 @@ async def set_setting(key: str, value: str) -> None:
 
 async def update_settings(settings: Settings) -> None:
     """Update all settings from a Settings object."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         settings_pairs = [
             ("ntfy_topic", settings.ntfy_topic or ""),
             ("ntfy_enabled", "1" if settings.ntfy_enabled else "0"),
@@ -787,6 +1086,7 @@ async def update_settings(settings: Settings) -> None:
             ("heartbeat_url", settings.heartbeat_url or ""),
             ("heartbeat_interval", str(settings.heartbeat_interval)),
             ("prune_days", str(settings.prune_days)),
+            ("prune_min_sightings", str(settings.prune_min_sightings)),
         ]
         for key, value in settings_pairs:
             await db.execute(
@@ -802,7 +1102,7 @@ async def update_auth_settings(
     password_hash: Optional[str] = None
 ) -> None:
     """Update authentication settings."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
             ("auth_enabled", "1" if enabled else "0")
@@ -826,7 +1126,7 @@ async def update_auth_settings(
 
 async def get_groups() -> list[DeviceGroup]:
     """Get all device groups."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM device_groups ORDER BY name") as cursor:
             rows = await cursor.fetchall()
@@ -843,7 +1143,7 @@ async def get_groups() -> list[DeviceGroup]:
 
 async def get_group(group_id: int) -> Optional[DeviceGroup]:
     """Get a device group by ID."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM device_groups WHERE id = ?", (group_id,)
@@ -861,7 +1161,7 @@ async def get_group(group_id: int) -> Optional[DeviceGroup]:
 
 async def create_group(name: str, color: str = "#3b82f6", icon: str = "📁") -> DeviceGroup:
     """Create a new device group."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         cursor = await db.execute(
             "INSERT INTO device_groups (name, color, icon) VALUES (?, ?, ?)",
             (name, color, icon)
@@ -872,7 +1172,7 @@ async def create_group(name: str, color: str = "#3b82f6", icon: str = "📁") ->
 
 async def update_group(group_id: int, name: str, color: str, icon: str) -> None:
     """Update a device group."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "UPDATE device_groups SET name = ?, color = ?, icon = ? WHERE id = ?",
             (name, color, icon, group_id)
@@ -882,7 +1182,7 @@ async def update_group(group_id: int, name: str, color: str, icon: str) -> None:
 
 async def delete_group(group_id: int) -> None:
     """Delete a device group and unassign all devices."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         # Unassign devices from this group
         await db.execute(
             "UPDATE devices SET group_id = NULL WHERE group_id = ?",
@@ -895,7 +1195,7 @@ async def delete_group(group_id: int) -> None:
 
 async def set_device_group(mac: str, group_id: Optional[int]) -> None:
     """Assign a device to a group (or remove from group if None)."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         await db.execute(
             "UPDATE devices SET group_id = ? WHERE mac = ?",
             (group_id, mac)
@@ -905,7 +1205,7 @@ async def set_device_group(mac: str, group_id: Optional[int]) -> None:
 
 async def get_devices_by_group(group_id: int) -> list[Device]:
     """Get all devices in a group."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM devices WHERE group_id = ? ORDER BY last_seen DESC",
@@ -917,7 +1217,7 @@ async def get_devices_by_group(group_id: int) -> list[Device]:
 
 async def get_watched_devices() -> list[Device]:
     """Get all watched (devices of interest)."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM devices WHERE watched = 1 ORDER BY last_seen DESC"
@@ -928,7 +1228,7 @@ async def get_watched_devices() -> list[Device]:
 
 async def get_rssi_history(mac: str, days: int = 7) -> list[dict]:
     """Get RSSI history for a device for charting."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         async with db.execute(
             """
             SELECT timestamp, rssi
@@ -959,7 +1259,7 @@ async def get_dwell_time(mac: str, days: int = 30, gap_minutes: int = 15) -> dic
         dict with total_minutes, session_count, avg_session_minutes,
         longest_session_minutes, sessions list
     """
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         async with db.execute(
             """
             SELECT timestamp FROM sightings
@@ -1024,39 +1324,131 @@ async def get_dwell_time(mac: str, days: int = 30, gap_minutes: int = 15) -> dic
 # Device Correlation Analysis
 # ============================================================================
 
-async def get_correlated_devices(mac: str, days: int = 30, window_minutes: int = 5) -> list[dict]:
-    """Find devices frequently seen around the same time as the target device.
+def _sessions_from_timestamps(timestamps: list[datetime], gap_seconds: float) -> list[tuple[datetime, datetime]]:
+    """Collapse a sorted list of sighting timestamps into presence sessions.
 
-    This helps identify devices that may belong to the same person or group.
+    A gap larger than ``gap_seconds`` between consecutive sightings ends the
+    current session and starts a new one. Returns a list of (start, end)
+    tuples — start is an "arrival" (came online), end is a "departure"
+    (went offline).
+    """
+    if not timestamps:
+        return []
+
+    sessions: list[tuple[datetime, datetime]] = []
+    start = end = timestamps[0]
+    for ts in timestamps[1:]:
+        if (ts - end).total_seconds() > gap_seconds:
+            sessions.append((start, end))
+            start = ts
+        end = ts
+    sessions.append((start, end))
+    return sessions
+
+
+def _count_aligned_events(
+    target_events: list[datetime],
+    candidate_events: list[datetime],
+    window_seconds: float,
+) -> int:
+    """Count target events that have a candidate event within ``window_seconds``.
+
+    Both lists must be sorted ascending. Each target event contributes at most
+    one match, so the result is in ``[0, len(target_events)]``.
+    """
+    if not target_events or not candidate_events:
+        return 0
+
+    matched = 0
+    for event in target_events:
+        idx = bisect.bisect_left(candidate_events, event)
+        # Nearest candidate event is either at idx or idx-1.
+        nearest = None
+        if idx < len(candidate_events):
+            nearest = (candidate_events[idx] - event).total_seconds()
+        if idx > 0:
+            prev = (event - candidate_events[idx - 1]).total_seconds()
+            nearest = prev if nearest is None else min(nearest, prev)
+        if nearest is not None and nearest <= window_seconds:
+            matched += 1
+    return matched
+
+
+async def get_correlated_devices(
+    mac: str,
+    days: int = 30,
+    window_minutes: int = 5,
+    gap_minutes: int = 15,
+    edge_minutes: Optional[int] = None,
+) -> list[dict]:
+    """Find devices that share presence patterns with the target device.
+
+    Two complementary signals are combined, so this surfaces devices that may
+    belong to the same person or group:
+
+    * **Co-occurrence** — how often the two devices are seen at the same time
+      (within ``window_minutes``).
+    * **Transition sync** — how often they come online and go offline around
+      the same time. Sightings are collapsed into presence sessions (a gap
+      longer than ``gap_minutes`` starts a new session); a candidate's
+      session arrivals/departures are matched against the target's within
+      ``edge_minutes``. This distinguishes devices that genuinely arrive and
+      leave together from those that merely happen to be around a lot.
 
     Args:
         mac: Target device MAC address
         days: Number of days to analyze
         window_minutes: Time window for co-occurrence (default 5 minutes)
+        gap_minutes: Idle gap that ends a presence session (default 15 minutes)
+        edge_minutes: Tolerance for matching arrivals/departures
+            (defaults to ``window_minutes``)
 
     Returns:
-        List of correlated devices with correlation score
+        List of correlated devices, each with a combined ``correlation_score``
+        plus the ``cooccurrence_score`` and ``transition_score`` components and
+        the number of synced arrivals/departures.
     """
-    async with aiosqlite.connect(DB_PATH) as db:
+    if edge_minutes is None:
+        edge_minutes = window_minutes
+    edge_seconds = edge_minutes * 60
+    gap_seconds = gap_minutes * 60
+
+    async with _connect() as db:
         db.row_factory = aiosqlite.Row
 
-        # Get all sightings of the target device
+        # Get all sightings of the target device (ordered, for session building).
         async with db.execute(
             """
             SELECT timestamp FROM sightings
             WHERE mac = ? AND timestamp > datetime('now', ?)
+            ORDER BY timestamp ASC
             """,
             (mac, f"-{days} days")
         ) as cursor:
-            target_sightings = await cursor.fetchall()
+            target_rows = await cursor.fetchall()
 
-        if not target_sightings:
+        if not target_rows:
             return []
 
-        target_count = len(target_sightings)
+        target_count = len(target_rows)
+        target_ts = [datetime.fromisoformat(row[0]) for row in target_rows]
+        target_sessions = _sessions_from_timestamps(target_ts, gap_seconds)
+        target_arrivals = [s[0] for s in target_sessions]
+        target_departures = [s[1] for s in target_sessions]
+        target_edge_count = len(target_arrivals) + len(target_departures)
 
-        # For each target sighting, find other devices seen within the window
-        # Using a single query for efficiency
+        # Candidate pool: devices co-occurring with the target. We pull a wider
+        # pool than we return so transition sync can re-rank the results.
+        #
+        # Each window bound is computed from s1 with datetime() and rewritten to
+        # the 'T'-separated form that timestamps are stored in, so the bare,
+        # indexed s2.timestamp can be range-compared as a raw string. Wrapping
+        # the column itself in datetime() (the obvious way to normalize) forces a
+        # full scan of the sightings table per target sighting; seeking the index
+        # instead turns a ~30s query into single-digit milliseconds on a large
+        # database. datetime() truncates to whole seconds, so the upper bound is
+        # the next second (exclusive) to keep the boundary second inclusive,
+        # exactly matching the previous datetime()-on-both-sides comparison.
         async with db.execute(
             """
             SELECT
@@ -1068,7 +1460,8 @@ async def get_correlated_devices(mac: str, days: int = 30, window_minutes: int =
                 d.total_sightings
             FROM sightings s1
             JOIN sightings s2 ON s2.mac != s1.mac
-                AND s2.timestamp BETWEEN datetime(s1.timestamp, ?) AND datetime(s1.timestamp, ?)
+                AND s2.timestamp >= replace(datetime(s1.timestamp, ?), ' ', 'T')
+                AND s2.timestamp <  replace(datetime(s1.timestamp, ?, '+1 second'), ' ', 'T')
             JOIN devices d ON d.mac = s2.mac
             WHERE s1.mac = ?
                 AND s1.timestamp > datetime('now', ?)
@@ -1076,17 +1469,57 @@ async def get_correlated_devices(mac: str, days: int = 30, window_minutes: int =
             GROUP BY s2.mac
             HAVING co_occurrences >= 2
             ORDER BY co_occurrences DESC
-            LIMIT 20
+            LIMIT 50
             """,
             (f"-{window_minutes} minutes", f"+{window_minutes} minutes", mac, f"-{days} days")
         ) as cursor:
             rows = await cursor.fetchall()
 
+        if not rows:
+            return []
+
+        # Fetch every candidate's sightings in one pass and group by MAC so we
+        # can build their presence sessions in Python.
+        candidate_macs = [row["mac"] for row in rows]
+        placeholders = ", ".join("?" for _ in candidate_macs)
+        async with db.execute(
+            f"""
+            SELECT mac, timestamp FROM sightings
+            WHERE mac IN ({placeholders}) AND timestamp > datetime('now', ?)
+            ORDER BY mac ASC, timestamp ASC
+            """,
+            (*candidate_macs, f"-{days} days")
+        ) as cursor:
+            sighting_rows = await cursor.fetchall()
+
+        sightings_by_mac: dict[str, list[datetime]] = {}
+        for row in sighting_rows:
+            sightings_by_mac.setdefault(row["mac"], []).append(
+                datetime.fromisoformat(row["timestamp"])
+            )
+
         results = []
         for row in rows:
-            # Calculate correlation score (0-100)
-            # Based on ratio of co-occurrences to target sightings
-            correlation = min(100, round((row["co_occurrences"] / target_count) * 100))
+            # Co-occurrence: ratio of co-sightings to the target's sightings.
+            cooccurrence_score = min(100, round((row["co_occurrences"] / target_count) * 100))
+
+            # Transition sync: how many of the target's arrivals/departures the
+            # candidate matches with one of its own.
+            cand_sessions = _sessions_from_timestamps(
+                sightings_by_mac.get(row["mac"], []), gap_seconds
+            )
+            cand_arrivals = [s[0] for s in cand_sessions]
+            cand_departures = [s[1] for s in cand_sessions]
+            synced_arrivals = _count_aligned_events(target_arrivals, cand_arrivals, edge_seconds)
+            synced_departures = _count_aligned_events(target_departures, cand_departures, edge_seconds)
+            transition_score = (
+                round(((synced_arrivals + synced_departures) / target_edge_count) * 100)
+                if target_edge_count else 0
+            )
+
+            # Combined score weights co-presence and synchronized transitions
+            # equally so co-travellers outrank devices that are merely always around.
+            correlation = round(0.5 * cooccurrence_score + 0.5 * transition_score)
 
             results.append({
                 "mac": row["mac"],
@@ -1095,10 +1528,297 @@ async def get_correlated_devices(mac: str, days: int = 30, window_minutes: int =
                 "device_type": row["device_type"],
                 "co_occurrences": row["co_occurrences"],
                 "total_sightings": row["total_sightings"],
-                "correlation_score": correlation
+                "correlation_score": correlation,
+                "cooccurrence_score": cooccurrence_score,
+                "transition_score": transition_score,
+                "synced_arrivals": synced_arrivals,
+                "synced_departures": synced_departures,
             })
 
-        return results
+        results.sort(key=lambda r: (r["correlation_score"], r["co_occurrences"]), reverse=True)
+        return results[:20]
+
+
+def _median_ping_gap(timestamps: list[datetime]) -> Optional[float]:
+    """Median seconds between consecutive sightings (a device's ping cadence).
+
+    The median shrugs off the occasional long absence between presence
+    sessions, so it reflects the typical advertising interval.
+    """
+    if len(timestamps) < 2:
+        return None
+    gaps = [
+        (timestamps[i] - timestamps[i - 1]).total_seconds()
+        for i in range(1, len(timestamps))
+    ]
+    gaps = [g for g in gaps if g > 0]
+    return statistics.median(gaps) if gaps else None
+
+
+async def get_rotation_candidates(
+    mac: str,
+    days: int = 7,
+    rssi_tolerance: int = 6,
+    overlap_window_seconds: int = 30,
+    max_overlap_ratio: float = 0.1,
+    max_handoff_seconds: int = 1800,
+    min_sightings: int = 5,
+) -> dict:
+    """Find devices that are likely the *same physical device* as ``mac``.
+
+    Modern devices rotate their Bluetooth MAC for privacy, so one phone shows
+    up as many short-lived randomized identifiers. Two identifiers are flagged
+    as likely the same device when they:
+
+    * are both **randomized** (locally-administered) MACs,
+    * **coexist in the same overall period** but are essentially never seen at
+      the same instant — the old identity goes quiet as the new one appears
+      (a handoff rather than two co-present devices),
+    * sit at a **similar signal strength** (mean RSSI within ``rssi_tolerance``
+      dB), and
+    * **ping at a similar cadence**.
+
+    This is a probabilistic heuristic, not proof — RSSI is noisy and devices at
+    similar distances can coincide. Returns a dict with the target's own signal
+    profile and a confidence-ranked list of candidates.
+    """
+    empty = {"target": None, "candidates": []}
+
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+
+        # The advertised name is a strong same-device signal: some devices keep
+        # a constant local name (AirPods, named accessories) while rotating MAC.
+        async with db.execute(
+            "SELECT friendly_name FROM devices WHERE mac = ?", (mac,)
+        ) as cursor:
+            name_row = await cursor.fetchone()
+        target_name = ((name_row["friendly_name"] if name_row else "") or "").strip()
+
+        async with db.execute(
+            """
+            SELECT timestamp, rssi FROM sightings
+            WHERE mac = ? AND rssi IS NOT NULL AND timestamp > datetime('now', ?)
+            ORDER BY timestamp ASC
+            """,
+            (mac, f"-{days} days")
+        ) as cursor:
+            target_rows = await cursor.fetchall()
+
+        if len(target_rows) < min_sightings:
+            return empty
+
+        t_ts = [datetime.fromisoformat(r["timestamp"]) for r in target_rows]
+        t_rssi = [r["rssi"] for r in target_rows]
+        t_mean = statistics.fmean(t_rssi)
+        t_std = statistics.pstdev(t_rssi) if len(t_rssi) > 1 else 0.0
+        t_gap = _median_ping_gap(t_ts)
+        t_first, t_last = t_ts[0], t_ts[-1]
+
+        # Candidate pool: randomized, non-ignored devices at a comparable mean
+        # RSSI, with enough sightings to be meaningful. Filtered in SQL to keep
+        # the per-candidate Python work bounded. A device that shares the
+        # target's exact advertised name is admitted even when its RSSI falls
+        # outside the tolerance — the name is reason enough to evaluate it, and
+        # the handoff/non-overlap checks below still gate it on rotation shape.
+        randomized = _randomized_mac_sql("d.mac")
+        params = [mac, f"-{days} days", min_sightings, t_mean, rssi_tolerance]
+        name_having = ""
+        if target_name:
+            name_having = " OR lower(d.friendly_name) = lower(?)"
+            params.append(target_name)
+        async with db.execute(
+            f"""
+            SELECT s.mac AS mac, AVG(s.rssi) AS mean_rssi, COUNT(*) AS cnt
+            FROM sightings s
+            JOIN devices d ON d.mac = s.mac
+            WHERE s.mac != ?
+              AND s.rssi IS NOT NULL
+              AND s.timestamp > datetime('now', ?)
+              AND d.ignored = 0
+              AND {randomized}
+            GROUP BY s.mac
+            HAVING cnt >= ? AND (ABS(AVG(s.rssi) - ?) <= ?{name_having})
+            """,
+            params
+        ) as cursor:
+            cand_rows = await cursor.fetchall()
+
+        if not cand_rows:
+            return {"target": _rotation_target_profile(t_mean, t_std, t_gap, len(t_ts)), "candidates": []}
+
+        cand_macs = [r["mac"] for r in cand_rows]
+        placeholders = ", ".join("?" for _ in cand_macs)
+        async with db.execute(
+            f"""
+            SELECT mac, timestamp, rssi FROM sightings
+            WHERE mac IN ({placeholders}) AND rssi IS NOT NULL
+              AND timestamp > datetime('now', ?)
+            ORDER BY mac ASC, timestamp ASC
+            """,
+            (*cand_macs, f"-{days} days")
+        ) as cursor:
+            sighting_rows = await cursor.fetchall()
+
+        async with db.execute(
+            f"SELECT mac, vendor, friendly_name, device_type FROM devices WHERE mac IN ({placeholders})",
+            cand_macs
+        ) as cursor:
+            meta = {r["mac"]: r for r in await cursor.fetchall()}
+
+    by_mac: dict[str, list] = {}
+    for r in sighting_rows:
+        by_mac.setdefault(r["mac"], []).append(
+            (datetime.fromisoformat(r["timestamp"]), r["rssi"])
+        )
+
+    results = []
+    for cmac, pts in by_mac.items():
+        if len(pts) < min_sightings:
+            continue
+        c_ts = [p[0] for p in pts]
+        c_rssi = [p[1] for p in pts]
+        c_first, c_last = c_ts[0], c_ts[-1]
+
+        # Must belong to the same continuous presence: either the active windows
+        # overlap (interleaved rotation) or they sit back-to-back within a
+        # handoff gap (old identity goes quiet, new one appears shortly after).
+        if c_last < t_first:
+            handoff_gap = (t_first - c_last).total_seconds()
+        elif t_last < c_first:
+            handoff_gap = (c_first - t_last).total_seconds()
+        else:
+            handoff_gap = 0.0
+        if handoff_gap > max_handoff_seconds:
+            continue
+
+        # ...but must NOT ping simultaneously: the same physical device only
+        # broadcasts one random MAC at a time.
+        simultaneous = _count_aligned_events(c_ts, t_ts, overlap_window_seconds)
+        overlap_ratio = simultaneous / min(len(c_ts), len(t_ts))
+        if overlap_ratio > max_overlap_ratio:
+            continue
+
+        c_mean = statistics.fmean(c_rssi)
+        c_std = statistics.pstdev(c_rssi) if len(c_rssi) > 1 else 0.0
+        c_gap = _median_ping_gap(c_ts)
+
+        rssi_delta = abs(c_mean - t_mean)
+        rssi_sim = 1 - min(1.0, rssi_delta / rssi_tolerance)
+        cadence_sim = (min(t_gap, c_gap) / max(t_gap, c_gap)) if (t_gap and c_gap) else 0.0
+        separation = 1 - overlap_ratio
+        base = 0.4 * rssi_sim + 0.3 * separation + 0.3 * cadence_sim
+
+        m = meta[cmac]
+        cand_name = ((m["friendly_name"] or "")).strip()
+        name_match = bool(target_name) and cand_name.lower() == target_name.lower()
+        # A shared advertised name floors confidence at 60 and scales the signal
+        # heuristics into the top band; without it, the heuristics stand alone.
+        confidence = round(100 * (0.6 + 0.4 * base)) if name_match else round(100 * base)
+
+        results.append({
+            "mac": cmac,
+            "vendor": m["vendor"],
+            "friendly_name": m["friendly_name"],
+            "device_type": m["device_type"],
+            "name_match": name_match,
+            "confidence": confidence,
+            "mean_rssi": round(c_mean, 1),
+            "rssi_delta": round(rssi_delta, 1),
+            "rssi_stddev": round(c_std, 1),
+            "ping_interval_seconds": round(c_gap) if c_gap else None,
+            "overlap_ratio": round(overlap_ratio, 3),
+            "handoff_seconds": round(handoff_gap),
+            "sightings": len(c_ts),
+            "first_seen": c_first.isoformat() + "Z",
+            "last_seen": c_last.isoformat() + "Z",
+        })
+
+    results.sort(key=lambda x: x["confidence"], reverse=True)
+    return {
+        "target": _rotation_target_profile(t_mean, t_std, t_gap, len(t_ts)),
+        "candidates": results[:10],
+    }
+
+
+def _rotation_target_profile(mean: float, std: float, gap: Optional[float], count: int) -> dict:
+    """Signal profile for the device being inspected (shown for context)."""
+    return {
+        "mean_rssi": round(mean, 1),
+        "rssi_stddev": round(std, 1),
+        "ping_interval_seconds": round(gap) if gap else None,
+        "sightings": count,
+    }
+
+
+# ============================================================================
+# Name-based Grouping
+# ============================================================================
+
+async def get_name_groups(
+    min_devices: int = 2,
+    include_ignored: bool = False,
+) -> list[dict]:
+    """Group devices that advertise the same name across different MAC addresses.
+
+    Apple-style MAC randomization makes a single physical device surface as many
+    rows that share an identical advertised name. This collapses devices by their
+    exact (case-insensitive) ``friendly_name`` and returns only the names carried
+    by more than one MAC, so duplicates from rotation are visible at a glance.
+
+    Randomized MACs are intentionally included here — they are the whole point of
+    the view. Each group reports how many of its members are randomized so a
+    genuine rotating device (mostly randomized) reads differently from several
+    distinct devices that merely happen to share a generic name.
+    """
+    conditions = ["friendly_name IS NOT NULL", "TRIM(friendly_name) != ''"]
+    if not include_ignored:
+        conditions.append("ignored = 0")
+    where_clause = " AND ".join(conditions)
+    randomized_count_sql = _randomized_mac_sql("mac")
+    safe_min = max(2, min_devices)
+
+    async with _connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"""
+            SELECT
+                MIN(friendly_name) AS name,
+                COUNT(*) AS device_count,
+                SUM(CASE WHEN {randomized_count_sql} THEN 1 ELSE 0 END) AS randomized_count,
+                SUM(COALESCE(total_sightings, 0)) AS total_sightings,
+                MIN(first_seen) AS first_seen,
+                MAX(last_seen) AS last_seen,
+                GROUP_CONCAT(mac, '||') AS macs,
+                GROUP_CONCAT(COALESCE(vendor, ''), '||') AS vendors,
+                GROUP_CONCAT(COALESCE(device_type, ''), '||') AS device_types
+            FROM devices
+            WHERE {where_clause}
+            GROUP BY lower(friendly_name)
+            HAVING device_count >= ?
+            ORDER BY device_count DESC, last_seen DESC
+            """,
+            (safe_min,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+    results = []
+    for row in rows:
+        macs = [m for m in (row["macs"] or "").split("||") if m]
+        vendors = [v for v in (row["vendors"] or "").split("||") if v]
+        types = [t for t in (row["device_types"] or "").split("||") if t]
+        results.append({
+            "name": row["name"],
+            "device_count": int(row["device_count"] or 0),
+            "randomized_count": int(row["randomized_count"] or 0),
+            "total_sightings": int(row["total_sightings"] or 0),
+            "first_seen": (row["first_seen"] + "Z") if row["first_seen"] else None,
+            "last_seen": (row["last_seen"] + "Z") if row["last_seen"] else None,
+            "macs": macs,
+            "vendor": vendors[0] if vendors else None,
+            "device_type": types[0] if types else None,
+        })
+    return results
 
 
 # ============================================================================
@@ -1131,7 +1851,7 @@ async def get_proximity_stats(mac: str, days: int = 7) -> dict:
 
     Returns distribution of sightings across proximity zones.
     """
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with _connect() as db:
         async with db.execute(
             """
             SELECT rssi FROM sightings
