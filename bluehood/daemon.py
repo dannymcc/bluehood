@@ -7,7 +7,6 @@ import logging
 import os
 import platform
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -45,64 +44,9 @@ class BluehoodDaemon:
         self._http_session: aiohttp.ClientSession | None = None
         self._start_time = time.monotonic()
 
-    @staticmethod
-    async def _wait_for_bluetooth(max_wait: int = 120, interval: int = 5) -> None:
-        """Wait for the macOS Bluetooth controller to be powered on.
-
-        On macOS, launchd may start this daemon at login before
-        CoreBluetooth has finished initialising.  We poll the
-        ControllerPowerState pref (works on all modern macOS versions)
-        to avoid the "adapter busy" errors that bleak raises when it
-        tries to scan against a not-yet-ready adapter.
-
-        This is a no-op on non-macOS platforms.
-        """
-        if platform.system() != "Darwin":
-            return
-
-        waited = 0
-        logger.info("macOS detected – waiting for Bluetooth controller …")
-
-        while waited < max_wait:
-            try:
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    [
-                        "defaults", "read",
-                        "/Library/Preferences/com.apple.Bluetooth",
-                        "ControllerPowerState",
-                    ],
-                    capture_output=True, text=True, timeout=5,
-                )
-                power_state = result.stdout.strip()
-                if power_state == "1":
-                    logger.info(
-                        "Bluetooth controller is on (waited %ds).", waited
-                    )
-                    # Extra grace period for CoreBluetooth framework
-                    # initialisation after the controller reports ready.
-                    await asyncio.sleep(3)
-                    return
-                else:
-                    logger.debug(
-                        "Bluetooth power state: %s (not ready yet)", power_state
-                    )
-            except Exception as exc:
-                logger.debug("Bluetooth check failed: %s", exc)
-
-            await asyncio.sleep(interval)
-            waited += interval
-
-        logger.warning(
-            "Bluetooth not confirmed ready after %ds – proceeding anyway.", max_wait
-        )
-
     async def start(self) -> None:
         """Start the daemon."""
         logger.info("Starting bluehood daemon...")
-
-        # Block until the Bluetooth adapter is ready (macOS only).
-        await self._wait_for_bluetooth()
 
         if self.scanner._use_dual_adapter:
             logger.info(f"Dual-adapter mode: BLE on {self.scanner.adapter}, classic on {self.scanner.classic_adapter}")
