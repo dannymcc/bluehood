@@ -15,7 +15,8 @@ from typing import Optional
 import aiohttp
 
 from . import db, __version__
-from .config import SCAN_INTERVAL, SOCKET_PATH, METRICS_PORT, WEB_PORT
+from .config import LOG_PATH, SCAN_INTERVAL, SOCKET_PATH, METRICS_PORT, WEB_PORT
+from .classifier import classify_device
 from .scanner import BluetoothScanner, ScannedDevice, list_adapters
 from .web import WebServer
 from .notifications import NotificationManager
@@ -24,6 +25,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_PATH, encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -64,7 +69,12 @@ class BluehoodDaemon:
         # Setup signal handlers
         loop = asyncio.get_event_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, lambda: asyncio.create_task(self.stop()))
+            try:
+                loop.add_signal_handler(sig, lambda: asyncio.create_task(self.stop()))
+            except NotImplementedError:
+                # Windows event loops have no signal handlers; Ctrl+C is
+                # handled as KeyboardInterrupt in main()
+                break
 
         # Start socket server for TUI communication
         await self._start_socket_server()
@@ -129,6 +139,10 @@ class BluehoodDaemon:
 
     async def _start_socket_server(self) -> None:
         """Start Unix socket server for TUI clients."""
+        if not hasattr(asyncio, "start_unix_server"):
+            logger.info("Unix sockets unavailable on this platform - TUI socket server disabled")
+            return
+
         # Remove stale socket
         if SOCKET_PATH.exists():
             SOCKET_PATH.unlink()
@@ -375,6 +389,17 @@ class BluehoodDaemon:
                     )
                     if is_new:
                         new_count += 1
+
+                    # Store the auto-classified type so the dashboard's
+                    # category counts and filters (which read the DB column) work
+                    if not db_device.device_type:
+                        device_type = classify_device(
+                            db_device.vendor, db_device.friendly_name,
+                            db_device.service_uuids, db_device.device_class,
+                        )
+                        if device_type != "unknown":
+                            await db.set_device_type(db_device.mac, device_type)
+                            db_device.device_type = device_type
 
                     # Trigger notification checks
                     await self._notifications.on_device_seen(db_device, is_new)

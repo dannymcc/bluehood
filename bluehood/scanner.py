@@ -57,6 +57,26 @@ BT_CLASS_MINOR_AUDIO = {
     0x08: "car_audio",
 }
 
+# Bluetooth SIG company identifiers found in BLE manufacturer data.
+# Used as a vendor fallback when the MAC has no OUI match (private/random
+# addresses). Names mirror the OUI database so classifier patterns match.
+# See: https://www.bluetooth.com/specifications/assigned-numbers/
+COMPANY_ID_VENDORS = {
+    0x0006: "Microsoft",
+    0x004C: "Apple, Inc.",
+    0x0057: "Harman International",
+    0x0075: "Samsung Electronics Co.,Ltd",
+    0x0087: "Garmin International",
+    0x009E: "Bose Corporation",
+    0x00E0: "Google, Inc.",
+    0x0103: "Bang & Olufsen",
+    0x012D: "Sony Corporation",
+    0x0157: "Huami (Xiaomi wearables)",
+    0x027D: "Huawei Technologies Co.,Ltd",
+    0x038F: "Xiaomi Communications Co Ltd",
+    0x0553: "Nintendo Co.,Ltd",
+}
+
 BT_CLASS_MINOR_PHONE = {
     0x01: "cellular",
     0x02: "cordless",
@@ -384,6 +404,12 @@ class BluetoothScanner:
             for device, adv_data in discovered.values():
                 mac = device.address
                 vendor = await self._get_vendor(mac)
+                if not vendor:
+                    # No OUI match - fall back to the advertised company ID
+                    for company_id in adv_data.manufacturer_data:
+                        vendor = COMPANY_ID_VENDORS.get(company_id)
+                        if vendor:
+                            break
 
                 service_uuids = list(adv_data.service_uuids) if adv_data.service_uuids else []
 

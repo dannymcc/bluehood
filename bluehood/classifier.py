@@ -300,6 +300,7 @@ SERVICE_UUID_PATTERNS = [
     ("cba20d00", TYPE_WATCH),  # SwitchBot
     ("0000fee0", TYPE_WATCH),  # Xiaomi Mi Band / Amazfit
     ("0000feea", TYPE_WATCH),  # Swirl Networks (wearables)
+    ("0000fd62", TYPE_WATCH),  # Fitbit
 
     # Printers
     ("00001118", TYPE_PRINTER),  # Direct Printing
@@ -425,8 +426,10 @@ def classify_device(
             return TYPE_WATCH
         if any(x in name_lower for x in ["airpod", "buds", "earbuds", "headphone"]):
             return TYPE_HEADPHONES
-        if any(x in name_lower for x in ["homepod", "echo", "speaker"]):
+        if any(x in name_lower for x in ["homepod", "echo", "speaker", "jbl", "stanmore", "marshall", "onyx", "soundbar"]):
             return TYPE_SPEAKER
+        if any(x in name_lower for x in ["nesthub", "nest hub", "nest mini", "govee", "gbk_h", "ihoment"]):
+            return TYPE_SMART_HOME
         if any(x in name_lower for x in ["tv", "roku", "firestick", "chromecast"]):
             return TYPE_TV
         if any(x in name_lower for x in ["car", "vehicle", "model 3", "model y", "model s"]):

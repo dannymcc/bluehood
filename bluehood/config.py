@@ -10,6 +10,9 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Database path (can be overridden directly)
 DB_PATH = Path(os.environ.get("BLUEHOOD_DB_PATH", DATA_DIR / "bluehood.db"))
 
+# Log file path (defaults to next to the database)
+LOG_PATH = Path(os.environ.get("BLUEHOOD_LOG_PATH", DB_PATH.with_suffix(".log")))
+
 # Socket path for daemon communication
 SOCKET_PATH = Path("/tmp/bluehood.sock")
 
