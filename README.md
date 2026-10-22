@@ -177,6 +177,46 @@ No Bluetooth adapters with BLE 'central' role found
 
 You can check your adapter's capabilities with `bluetoothctl show` and look for `central` in the supported roles.
 
+### Hardware Requirements
+
+Bluehood is lightweight: a single Python process that wakes up every few seconds for a short scan and writes sightings to SQLite. It needs no GPU and no heavy dependencies. The web dashboard runs inside the same process; Grafana and Prometheus are optional and can live on a different machine.
+
+| | Minimum | Comfortable |
+|---|---|---|
+| CPU | Any 64-bit ARM (arm64) or x86-64 CPU, e.g. Raspberry Pi Zero 2 W | Raspberry Pi 3/4/5 or any small x86 box |
+| RAM | 512 MB (the Bluehood process typically uses well under 100 MB) | 1 GB+ if you also run Docker, the dashboard full-time, or Grafana on the same device |
+| Storage | A few hundred MB free for the database (it grows with sightings, see `BLUEHOOD_PRUNE_DAYS`) | A good-quality SD card or SSD for an always-on device |
+| Bluetooth | Bluetooth 4.0+ with BLE Central role (see above) | Two adapters to scan BLE and classic at the same time (`--classic-adapter`) |
+| OS | Linux with BlueZ, or macOS | |
+
+The Docker image is published for `linux/amd64` and `linux/arm64`. 32-bit ARM (`armv7`/`armhf`, e.g. 32-bit Raspberry Pi OS or the original Pi Zero W) has no image, so use the manual install there instead.
+
+#### Raspberry Pi Zero 2 W
+
+The Pi Zero 2 W (quad-core Cortex-A53, 512 MB RAM, onboard Bluetooth 4.2/BLE) is enough to run Bluehood as an always-on collector. Recommendations:
+
+- Install the **64-bit Raspberry Pi OS Lite** so the `arm64` Docker image works and RAM isn't spent on a desktop.
+- 512 MB is tight with Docker running, so the **manual install + systemd service** has the smallest footprint. Docker works too.
+- For collector-only use, start it with `bluehood --no-web` (for the systemd service, change `ExecStart` to `/usr/bin/python3 -m bluehood.daemon --no-web`). `sqlite3` is needed for the backup step below (`sudo apt install sqlite3`). You can start the dashboard on demand later, or copy the database to another machine to explore it (see below).
+- The onboard radio is a combined Wi-Fi/Bluetooth chip, so heavy Wi-Fi traffic can reduce Bluetooth range and sensitivity. For better coverage, plug in a USB Bluetooth dongle through an OTG adapter and select it with `--adapter`.
+- Set `BLUEHOOD_PRUNE_DAYS` (and optionally `BLUEHOOD_PRUNE_MIN_SIGHTINGS`) to keep the database small on an SD card.
+
+#### Collecting on one device, analysing on another
+
+The database is a single SQLite file (see [Data Storage](#data-storage)). The database uses WAL mode, so take a consistent copy while Bluehood is running with SQLite's online backup instead of copying the file directly:
+
+```bash
+# On the collector (the systemd service stores it in /var/lib/bluehood;
+# a manual run uses ~/.local/share/bluehood; Docker uses the /data volume)
+sudo sqlite3 /var/lib/bluehood/bluehood.db ".backup /tmp/bluehood-copy.db"
+sudo chmod a+r /tmp/bluehood-copy.db
+
+# Copy it to your workstation
+scp pi@raspberrypi:/tmp/bluehood-copy.db ./bluehood.db
+```
+
+Open the copy with any SQLite tool, or point a Bluehood install at it with `BLUEHOOD_DB_PATH=./bluehood.db bluehood` to browse it in the dashboard. That install will also start scanning if it finds a Bluetooth adapter. To pull metrics from the collector without copying anything, enable the [Prometheus exporter](#prometheus-metrics) on the Pi and run Prometheus/Grafana on another machine.
+
 ### Manual Installation (Linux)
 
 ```bash
