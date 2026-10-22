@@ -59,6 +59,7 @@ Bluehood is a Bluetooth scanner that:
 - BLE service UUID fingerprinting for accurate device classification
 - Classic Bluetooth device class parsing
 - Randomized MAC filtering (hidden from main view)
+- [ESPHome Bluetooth proxy](https://esphome.io/components/bluetooth_proxy/) support — use cheap ESP32 boards as remote scanners to extend coverage, or run without local Bluetooth hardware at all
 
 ### Device Management
 - Mark devices as "Watched" for tracking personal devices
@@ -157,6 +158,10 @@ The web dashboard will be available at **http://localhost:8080**
 | `TZ` | UTC | Container timezone (e.g., `Europe/London`) |
 | `BLUEHOOD_ADAPTER` | auto | Bluetooth adapter for BLE scanning (e.g., `hci0`) |
 | `BLUEHOOD_CLASSIC_ADAPTER` | same as `BLUEHOOD_ADAPTER` | Separate adapter for classic Bluetooth scanning (e.g., `hci1`). When set to a different adapter, BLE and classic scans run concurrently. |
+| `BLUEHOOD_ESPHOME_PROXIES` | disabled | Comma-separated ESPHome Bluetooth proxies, each `host[:port][@encryption_key]` (see [ESPHome Bluetooth Proxies](#esphome-bluetooth-proxies)) |
+| `BLUEHOOD_ESPHOME_NOISE_PSK` | none | API encryption key used for proxies that don't specify their own |
+| `BLUEHOOD_ESPHOME_PASSWORD` | none | Legacy API password for proxies (only if your devices use `api: password:`) |
+| `BLUEHOOD_LOCAL_SCAN` | `1` | Set to `0` to skip the local Bluetooth adapter and rely only on ESPHome proxies |
 | `BLUEHOOD_DATA_DIR` | `/data` | Database storage directory |
 | `BLUEHOOD_PORT` | `8080` | Web dashboard port. The container uses host networking, so change this (rather than a port mapping) if 8080 is taken |
 | `BLUEHOOD_NTFY_SERVER` | `https://ntfy.sh` | Base URL of the ntfy server for push notifications; point it at a self-hosted instance. The value saved in the Settings page takes precedence |
@@ -261,7 +266,41 @@ bluehood --no-web
 
 # Enable Prometheus metrics exporter on port 9199
 bluehood --metrics-port 9199
+
+# Also receive advertisements from ESPHome Bluetooth proxies
+bluehood --esphome-proxy livingroom-proxy.local --esphome-proxy 192.168.1.50@base64key=
+
+# Proxies only — no local Bluetooth adapter needed
+bluehood --no-local-scan --esphome-proxy livingroom-proxy.local
 ```
+
+### ESPHome Bluetooth Proxies
+
+Any ESP32 running [ESPHome](https://esphome.io/) with the [`bluetooth_proxy`](https://esphome.io/components/bluetooth_proxy/) component forwards the BLE advertisements it hears over the ESPHome native API. Bluehood can connect to one or more of these proxies and treat them like extra Bluetooth adapters — handy for covering a larger area, placing a scanner where the server can't go, or running Bluehood on a machine (or VM / NAS) with no Bluetooth at all.
+
+1. Flash a proxy, e.g. from [ESPHome's ready-made Bluetooth proxy firmware](https://esphome.io/projects/?type=bluetooth), or add to your device config:
+   ```yaml
+   api:
+     encryption:
+       key: "base64key="   # optional but recommended
+
+   esp32_ble_tracker:
+     scan_parameters:
+       active: true        # request scan responses, which carry most device names
+
+   bluetooth_proxy:
+   ```
+2. Install the optional dependency (already included in the Docker image):
+   ```bash
+   pip install -e ".[esphome]"
+   ```
+3. Point Bluehood at the proxies with `--esphome-proxy` (repeatable) or `BLUEHOOD_ESPHOME_PROXIES` (comma-separated). Each entry is `host[:port][@encryption_key]`; the port defaults to `6053` and IPv6 addresses go in brackets (`[fd00::12]:6053`). If all proxies share one key, set `BLUEHOOD_ESPHOME_NOISE_PSK` instead of repeating it.
+
+Advertisements from every proxy and the local adapter are merged into one sighting per device per scan cycle, using the strongest RSSI heard. Bluehood reconnects automatically if a proxy goes offline.
+
+> **Note**: An ESPHome Bluetooth proxy streams advertisements to **one API client at a time**. A proxy that Home Assistant (and integrations like [Bermuda](https://github.com/agittins/bermuda)) is already subscribed to won't send anything to Bluehood — give Bluehood its own proxies. Bluehood logs a warning when a connected proxy sends no advertisements.
+
+> **Note**: Proxies only forward BLE advertisements, so classic Bluetooth devices are still found only by a local adapter.
 
 ## Web Dashboard
 
