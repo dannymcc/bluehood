@@ -15,7 +15,11 @@ from typing import Optional
 import aiohttp
 
 from . import db, __version__
-from .config import SCAN_INTERVAL, SOCKET_PATH, METRICS_PORT, WEB_PORT
+from .config import (
+    SCAN_INTERVAL, SOCKET_PATH, METRICS_PORT, WEB_PORT,
+    ESPHOME_PROXIES, ESPHOME_NOISE_PSK, ESPHOME_PASSWORD, LOCAL_SCAN,
+)
+from .esphome_proxy import ProxyConfig, parse_proxy_list
 from .scanner import BluetoothScanner, ScannedDevice, list_adapters
 from .web import WebServer
 from .notifications import NotificationManager
@@ -31,8 +35,8 @@ logger = logging.getLogger(__name__)
 class BluehoodDaemon:
     """Main daemon process for Bluetooth scanning."""
 
-    def __init__(self, adapter: Optional[str] = None, classic_adapter: Optional[str] = None, web_port: Optional[int] = None, metrics_port: Optional[int] = None):
-        self.scanner = BluetoothScanner(adapter=adapter, classic_adapter=classic_adapter)
+    def __init__(self, adapter: Optional[str] = None, classic_adapter: Optional[str] = None, web_port: Optional[int] = None, metrics_port: Optional[int] = None, proxies: Optional[list[ProxyConfig]] = None, local_scan: bool = True):
+        self.scanner = BluetoothScanner(adapter=adapter, classic_adapter=classic_adapter, proxies=proxies, local_scan=local_scan)
         self.running = False
         self.clients: list[asyncio.StreamWriter] = []
         self._server: asyncio.Server | None = None
@@ -48,7 +52,9 @@ class BluehoodDaemon:
         """Start the daemon."""
         logger.info("Starting bluehood daemon...")
 
-        if self.scanner._use_dual_adapter:
+        if not self.scanner.local_scan:
+            logger.info("Local Bluetooth scanning disabled (ESPHome proxies only)")
+        elif self.scanner._use_dual_adapter:
             logger.info(f"Dual-adapter mode: BLE on {self.scanner.adapter}, classic on {self.scanner.classic_adapter}")
         else:
             adapter = self.scanner.adapter or "auto"
@@ -85,6 +91,13 @@ class BluehoodDaemon:
                 logger.error("prometheus-client not installed. Install with: pip install bluehood[metrics]")
                 self._metrics = None
 
+        # Connect to ESPHome Bluetooth proxies (runs in the background)
+        if self.scanner.proxies.enabled:
+            if not self.scanner.proxies.start() and not self.scanner.local_scan:
+                logger.critical("No scan source available (local scanning disabled, ESPHome proxies unavailable)")
+                await self.stop()
+                return
+
         # Start scanning and background loops
         self.running = True
         self._http_session = aiohttp.ClientSession()
@@ -113,6 +126,9 @@ class BluehoodDaemon:
         # Stop web server
         if self._web_server:
             await self._web_server.stop()
+
+        # Disconnect from ESPHome proxies
+        await self.scanner.proxies.stop()
 
         # Stop notifications
         await self._notifications.stop()
@@ -527,6 +543,20 @@ def main() -> None:
         default=None,
         help="Prometheus metrics port (default: disabled, env: BLUEHOOD_METRICS_PORT)"
     )
+    parser.add_argument(
+        "--esphome-proxy",
+        action="append",
+        metavar="HOST[:PORT][@KEY]",
+        help="ESPHome Bluetooth proxy to receive advertisements from; repeat for "
+             "several (env: BLUEHOOD_ESPHOME_PROXIES, comma-separated). "
+             "Requires: pip install bluehood[esphome]"
+    )
+    parser.add_argument(
+        "--no-local-scan",
+        action="store_true",
+        help="Don't scan with a local Bluetooth adapter; rely on ESPHome proxies "
+             "only (env: BLUEHOOD_LOCAL_SCAN=0)"
+    )
     args = parser.parse_args()
 
     if args.list_adapters:
@@ -541,7 +571,22 @@ def main() -> None:
 
     web_port = None if args.no_web else (args.port or WEB_PORT)
     metrics_port = args.metrics_port or METRICS_PORT
-    daemon = BluehoodDaemon(adapter=args.adapter, classic_adapter=args.classic_adapter, web_port=web_port, metrics_port=metrics_port)
+    proxy_spec = ",".join(args.esphome_proxy) if args.esphome_proxy else ESPHOME_PROXIES
+    try:
+        proxies = parse_proxy_list(proxy_spec, ESPHOME_NOISE_PSK, ESPHOME_PASSWORD)
+    except ValueError as e:
+        parser.error(str(e))
+    local_scan = LOCAL_SCAN and not args.no_local_scan
+    if not local_scan and not proxies:
+        parser.error("local scanning is disabled but no ESPHome proxies are configured")
+    daemon = BluehoodDaemon(
+        adapter=args.adapter,
+        classic_adapter=args.classic_adapter,
+        web_port=web_port,
+        metrics_port=metrics_port,
+        proxies=proxies,
+        local_scan=local_scan,
+    )
     try:
         asyncio.run(daemon.start())
     except KeyboardInterrupt:

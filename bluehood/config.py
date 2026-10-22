@@ -37,6 +37,18 @@ METRICS_PORT = int(os.environ.get("BLUEHOOD_METRICS_PORT", 0)) or None
 # scans to run concurrently without adapter contention.
 CLASSIC_BLUETOOTH_ADAPTER = os.environ.get("BLUEHOOD_CLASSIC_ADAPTER", None)
 
+# ESPHome Bluetooth proxies to receive advertisements from (None = disabled).
+# Comma-separated host[:port][@encryption_key] entries, e.g.
+# "livingroom.local,192.168.1.50:6053@base64key=". Requires bluehood[esphome].
+ESPHOME_PROXIES = os.environ.get("BLUEHOOD_ESPHOME_PROXIES")
+# Default API encryption key / legacy password for proxies without their own key
+ESPHOME_NOISE_PSK = os.environ.get("BLUEHOOD_ESPHOME_NOISE_PSK")
+ESPHOME_PASSWORD = os.environ.get("BLUEHOOD_ESPHOME_PASSWORD")
+
+# Scan with the local Bluetooth adapter. Disable to rely solely on ESPHome
+# proxies (e.g. on a host without Bluetooth hardware).
+LOCAL_SCAN = os.environ.get("BLUEHOOD_LOCAL_SCAN", "1").strip().lower() not in ("0", "false", "no", "off")
+
 # Heartbeat check-in URL (None = disabled). POST JSON payload periodically.
 HEARTBEAT_URL = os.environ.get("BLUEHOOD_HEARTBEAT_URL")
 HEARTBEAT_INTERVAL = int(os.environ.get("BLUEHOOD_HEARTBEAT_INTERVAL", "300"))  # seconds

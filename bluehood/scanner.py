@@ -25,6 +25,7 @@ MACVENDORS_API_URL = "https://api.macvendors.com/"
 
 from .classifier import is_macos_uuid
 from .config import SCAN_DURATION, BLUETOOTH_ADAPTER, CLASSIC_BLUETOOTH_ADAPTER, DATA_DIR
+from .esphome_proxy import ESPHomeProxyManager, ProxyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +160,12 @@ class BluetoothScanner:
         self,
         adapter: Optional[str] = None,
         classic_adapter: Optional[str] = None,
+        proxies: Optional[list[ProxyConfig]] = None,
+        local_scan: bool = True,
     ):
         self.adapter = adapter or BLUETOOTH_ADAPTER
+        self.local_scan = local_scan
+        self.proxies = ESPHomeProxyManager(proxies or [])
         self.classic_adapter = classic_adapter or CLASSIC_BLUETOOTH_ADAPTER or self.adapter
         self._use_dual_adapter = (
             self.classic_adapter is not None
@@ -506,7 +511,9 @@ class BluetoothScanner:
         ble_devices: list[ScannedDevice] = []
         classic_devices: list[ScannedDevice] = []
 
-        if self._use_dual_adapter:
+        if not self.local_scan:
+            pass  # Proxy-only mode
+        elif self._use_dual_adapter:
             # Separate adapters — safe to run concurrently
             ble_task = asyncio.create_task(self.scan_ble(duration))
             classic_task = asyncio.create_task(self.scan_classic())
@@ -536,20 +543,56 @@ class BluetoothScanner:
             except Exception as e:
                 logger.debug(f"Classic scan failed: {e}")
 
+        proxy_devices = await self._drain_proxies()
+
         # Merge results, preferring BLE data if device seen in both
-        seen_macs = set()
-        devices = []
+        by_mac: dict[str, ScannedDevice] = {}
 
         for device in ble_devices:
-            seen_macs.add(device.mac.upper())
-            devices.append(device)
+            by_mac[device.mac.upper()] = device
+
+        # Proxy sightings of a device the local adapter also heard are folded
+        # into one sighting, keeping the strongest signal and all identifiers
+        for device in proxy_devices:
+            existing = by_mac.get(device.mac.upper())
+            if existing is None:
+                by_mac[device.mac.upper()] = device
+                continue
+            existing.rssi = max(existing.rssi, device.rssi)
+            existing.name = existing.name or device.name
+            existing.vendor = existing.vendor or device.vendor
+            for uuid in device.service_uuids:
+                if uuid not in existing.service_uuids:
+                    existing.service_uuids.append(uuid)
 
         for device in classic_devices:
-            if device.mac.upper() not in seen_macs:
-                devices.append(device)
+            if device.mac.upper() not in by_mac:
+                by_mac[device.mac.upper()] = device
 
-        logger.info(f"Scan complete: {len(ble_devices)} BLE + {len(classic_devices)} classic = {len(devices)} unique devices")
+        devices = list(by_mac.values())
 
+        summary = f"{len(ble_devices)} BLE + {len(classic_devices)} classic"
+        if self.proxies.enabled:
+            summary += (
+                f" + {len(proxy_devices)} via ESPHome proxies "
+                f"({self.proxies.connected_count}/{len(self.proxies.proxies)} connected)"
+            )
+        logger.info(f"Scan complete: {summary} = {len(devices)} unique devices")
+
+        return devices
+
+    async def _drain_proxies(self) -> list[ScannedDevice]:
+        """Collect devices heard by ESPHome proxies since the last scan."""
+        devices: list[ScannedDevice] = []
+        for adv in self.proxies.drain():
+            devices.append(ScannedDevice(
+                mac=adv.mac,
+                name=adv.name,
+                rssi=adv.rssi,
+                vendor=await self._get_vendor(adv.mac),
+                service_uuids=adv.service_uuids,
+                bt_type="ble",
+            ))
         return devices
 
     async def scan_continuous(

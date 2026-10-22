@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 metrics = ["prometheus-client>=0.21.0"]
+esphome = ["aioesphomeapi>=24.0.0"]
 
 [project.scripts]
 bluehood = "bluehood.daemon:main"
