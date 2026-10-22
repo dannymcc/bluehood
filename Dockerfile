@@ -19,7 +19,7 @@ COPY pyproject.toml .
 COPY bluehood/ bluehood/
 COPY README.md .
 
-RUN pip install --no-cache-dir -e ".[metrics]"
+RUN pip install --no-cache-dir -e ".[metrics,esphome]"
 
 # Create data directory for database and cache
 RUN mkdir -p /data && chown bluehood:bluehood /data

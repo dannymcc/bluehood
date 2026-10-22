@@ -17,6 +17,8 @@ dependencies = [
 
 [project.optional-dependencies]
 metrics = ["prometheus-client>=0.21.0"]
+# 37.2.2 is the first release whose APIClient.connect() accepts log_errors
+esphome = ["aioesphomeapi>=37.2.2"]
 
 [project.scripts]
 bluehood = "bluehood.daemon:main"
