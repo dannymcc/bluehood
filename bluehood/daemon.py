@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import logging
 import os
@@ -579,6 +580,11 @@ def main() -> None:
     local_scan = LOCAL_SCAN and not args.no_local_scan
     if not local_scan and not proxies:
         parser.error("local scanning is disabled but no ESPHome proxies are configured")
+    if not local_scan and importlib.util.find_spec("aioesphomeapi") is None:
+        parser.error(
+            "local scanning is disabled but aioesphomeapi is not installed "
+            "(pip install bluehood[esphome])"
+        )
     daemon = BluehoodDaemon(
         adapter=args.adapter,
         classic_adapter=args.classic_adapter,
