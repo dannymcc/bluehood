@@ -488,8 +488,12 @@ class WebServer:
         daily_timeline = await db.get_daily_sightings(mac, 30)
         device_type = device.device_type or classify_device(device.vendor, device.friendly_name, device.service_uuids, device.device_class)
 
+        # Sightings are bucketed by UTC hour; the text summary and server-rendered
+        # heatmap describe the local day, so shift them to the server's zone.
+        local_hourly = db.hourly_to_local(hourly)
+
         # Calculate pattern summary
-        pattern = self._analyze_pattern(hourly, daily, len(sightings))
+        pattern = self._analyze_pattern(local_hourly, daily, len(sightings))
 
         # Calculate average RSSI from recent sightings
         rssi_values = [s.rssi for s in sightings if s.rssi is not None]
@@ -521,7 +525,7 @@ class WebServer:
             "pattern": pattern,
             "avg_rssi": avg_rssi,
             "proximity_zone": proximity_zone,
-            "hourly_heatmap": generate_hourly_heatmap(hourly),
+            "hourly_heatmap": generate_hourly_heatmap(local_hourly),
             "daily_heatmap": generate_daily_heatmap(daily),
             "hourly_data": {str(k): v for k, v in hourly.items()},
             "daily_data": {str(k): v for k, v in daily.items()},
@@ -761,9 +765,9 @@ class WebServer:
 
         try:
             if start_str:
-                start_dt = datetime.fromisoformat(start_str.replace("T", " "))
+                start_dt = db.to_utc_naive(datetime.fromisoformat(start_str.replace("T", " ")))
             if end_str:
-                end_dt = datetime.fromisoformat(end_str.replace("T", " "))
+                end_dt = db.to_utc_naive(datetime.fromisoformat(end_str.replace("T", " ")))
         except ValueError:
             return web.json_response({"error": "Invalid datetime format"}, status=400)
 
@@ -782,8 +786,8 @@ class WebServer:
                 "type_icon": get_type_icon(device_type),
                 "type_label": get_type_label(device_type),
                 "ignored": r.get("ignored", False),
-                "first_seen": r.get("range_first"),
-                "last_seen": r.get("range_last"),
+                "first_seen": (r["range_first"] + "Z") if r.get("range_first") else None,
+                "last_seen": (r["range_last"] + "Z") if r.get("range_last") else None,
                 "total_sightings": r.get("range_sightings", 0),
             })
 
