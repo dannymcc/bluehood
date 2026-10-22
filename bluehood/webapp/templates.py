@@ -1341,8 +1341,9 @@ HTML_TEMPLATE = """
             if (!startInput && !endInput) { clearDateFilters(); return; }
             try {
                 let url = '/api/search?';
-                if (startInput) url += 'start=' + encodeURIComponent(startInput) + '&';
-                if (endInput) url += 'end=' + encodeURIComponent(endInput);
+                // datetime-local values are in the browser's zone; send them as UTC
+                if (startInput) url += 'start=' + encodeURIComponent(new Date(startInput).toISOString()) + '&';
+                if (endInput) url += 'end=' + encodeURIComponent(new Date(endInput).toISOString());
                 const response = await fetch(url);
                 const data = await response.json();
                 dateFilteredDevices = data.devices || [];

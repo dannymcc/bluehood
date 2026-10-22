@@ -113,7 +113,7 @@ class NotificationManager:
         if not self._settings or not self._settings.ntfy_enabled:
             return
 
-        now = datetime.now()
+        now = db.utcnow()
 
         # Check for new device notification
         if self._settings.notify_new_device and not device.new_device_notified:
@@ -177,7 +177,7 @@ class NotificationManager:
         if not self._settings.notify_watched_leave:
             return
 
-        now = datetime.now()
+        now = db.utcnow()
         threshold = timedelta(minutes=self._settings.watched_absence_minutes)
 
         # Get all watched devices
@@ -225,7 +225,7 @@ class NotificationManager:
     def update_watched_state(self, mac: str, watched: bool) -> None:
         """Update internal state when a device's watched status changes."""
         if watched:
-            self._watched_last_seen[mac] = datetime.now()
+            self._watched_last_seen[mac] = db.utcnow()
         else:
             self._watched_last_seen.pop(mac, None)
             self._watched_last_seen.pop(f"notified_absent_{mac}", None)

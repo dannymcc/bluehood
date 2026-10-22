@@ -5,14 +5,38 @@ import json
 import logging
 import re
 import statistics
+import time
 import aiosqlite
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dataclasses import dataclass
 
 from .config import DB_PATH, HEARTBEAT_URL, HEARTBEAT_INTERVAL, NTFY_SERVER, PRUNE_DAYS, PRUNE_MIN_SIGHTINGS
 
 logger = logging.getLogger(__name__)
+
+
+def utcnow() -> datetime:
+    """Current time as a naive UTC datetime.
+
+    All timestamps are stored in UTC (naive ISO strings) regardless of the
+    host/container ``TZ``, so they agree with SQLite's ``datetime('now')`` and
+    with the ``Z`` suffix the API appends when serialising them.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def local_midnight_utc() -> datetime:
+    """Start of the current local day, as a naive UTC datetime."""
+    midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def to_utc_naive(dt: datetime) -> datetime:
+    """Normalise an aware datetime to naive UTC; naive values are assumed UTC."""
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 @dataclass
@@ -295,7 +319,43 @@ async def init_db() -> None:
             except Exception:
                 pass  # Column already exists
 
+        await _migrate_timestamps_to_utc(db)
+
         await db.commit()
+
+
+_UTC_MIGRATION_KEY = "timestamps_utc"
+
+
+async def _migrate_timestamps_to_utc(db: aiosqlite.Connection) -> None:
+    """One-time conversion of stored timestamps from host-local time to UTC.
+
+    Older versions recorded ``datetime.now()`` (local time of the host or of the
+    container's ``TZ``) but served it with a ``Z`` suffix, so any non-UTC
+    install showed times shifted by its UTC offset. SQLite's ``'utc'``
+    modifier converts using the process's local zone rules (DST-aware). On a
+    UTC host this is a no-op.
+    """
+    async with db.execute("SELECT value FROM settings WHERE key = ?", (_UTC_MIGRATION_KEY,)) as cursor:
+        if await cursor.fetchone():
+            return
+
+    to_utc = "strftime('%Y-%m-%dT%H:%M:%f', {col}, 'utc')"
+    # Skip the table rewrite when the local zone is UTC all year round.
+    if time.timezone != 0 or time.daylight:
+        logger.info("Converting stored timestamps from local time to UTC (one-time migration)")
+        await db.execute(
+            f"UPDATE devices SET first_seen = {to_utc.format(col='first_seen')} WHERE first_seen IS NOT NULL"
+        )
+        await db.execute(
+            f"UPDATE devices SET last_seen = {to_utc.format(col='last_seen')} WHERE last_seen IS NOT NULL"
+        )
+        await db.execute(f"UPDATE sightings SET timestamp = {to_utc.format(col='timestamp')}")
+
+    await db.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, '1')", (_UTC_MIGRATION_KEY,)
+    )
+    await db.commit()
 
 
 def _parse_device_row(row) -> Device:
@@ -543,8 +603,8 @@ async def get_sightings_for_export(
 
 async def get_dashboard_stats(include_ignored: bool = True) -> dict:
     """Get dashboard stats and server-side filter counts without loading all rows."""
-    now = datetime.now()
-    today_start = datetime.combine(now.date(), datetime.min.time())
+    now = utcnow()
+    today_start = local_midnight_utc()
     one_hour_ago = now - timedelta(hours=1)
 
     randomized_sql = _randomized_mac_sql("d.mac")
@@ -603,7 +663,7 @@ async def get_dashboard_stats(include_ignored: bool = True) -> dict:
 
 async def get_global_stats(include_ignored: bool = True) -> dict:
     """Get global device totals without loading full row data."""
-    today_start = datetime.combine(datetime.now().date(), datetime.min.time()).isoformat()
+    today_start = local_midnight_utc().isoformat()
     where_clause = "" if include_ignored else "WHERE ignored = 0"
 
     query = f"""
@@ -643,7 +703,7 @@ async def upsert_device(
 
     Returns tuple of (device, is_new) where is_new indicates first sighting.
     """
-    now = datetime.now()
+    now = utcnow()
     uuids_json = json.dumps(service_uuids) if service_uuids else None
 
     async with _connect() as db:
@@ -840,6 +900,16 @@ async def get_hourly_distribution(mac: str, days: int = 30) -> dict[int, int]:
             return {int(row[0]): row[1] for row in rows}
 
 
+def hourly_to_local(hourly: dict[int, int]) -> dict[int, int]:
+    """Shift a UTC hour-of-day distribution into the local zone."""
+    offset_hours = round(datetime.now().astimezone().utcoffset().total_seconds() / 3600)
+    local: dict[int, int] = {}
+    for hour, count in hourly.items():
+        local_hour = (hour + offset_hours) % 24
+        local[local_hour] = local.get(local_hour, 0) + count
+    return local
+
+
 async def get_daily_distribution(mac: str, days: int = 30) -> dict[int, int]:
     """Get daily distribution of sightings (0=Monday, 6=Sunday)."""
     async with _connect() as db:
@@ -996,11 +1066,11 @@ async def search_devices(
 
             if start_time:
                 conditions.append("s.timestamp >= ?")
-                params.append(start_time.isoformat())
+                params.append(to_utc_naive(start_time).isoformat())
 
             if end_time:
                 conditions.append("s.timestamp <= ?")
-                params.append(end_time.isoformat())
+                params.append(to_utc_naive(end_time).isoformat())
 
             where_clause = " AND ".join(conditions) if conditions else "1=1"
 
